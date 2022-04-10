@@ -1,0 +1,10 @@
+name = "constraints"
+version = "0.1.0"
+[dependencies]
+stanza-utils = "jackbackrack/stanza-utils|0.1.1"
+stanza-geom = "jackbackrack/stanza-geom|0.1.2"
+stanza-gfx = "jackbackrack/stanza-gfx|0.1.2"
+stanza-opencv = "jackbackrack/stanza-opencv|0.1.0"
+stanza-gui = "jackbackrack/stanza-gui|0.1.1"
+stanza-libfive = "jackbackrack/stanza-libfive|0.1.0"
+stanza-asmjit = "jackbackrack/stanza-asmjit|0.1.1"

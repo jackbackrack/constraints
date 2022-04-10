@@ -1,0 +1,273 @@
+defpackage solvespace-demo :
+  import core
+  import math
+  import collections
+  import solvespace
+  import utils/seqable
+  import geom/vec
+  import geom/circle with:
+    prefix(Circle) => geom-
+  import geom/line-segment
+  import geom/polyline
+  import geom/polyhedron
+  import geom/polyhedra
+  import geom/assembly
+  import geom/visualizer
+
+defstruct Triangle <: Lines2 :
+  points: Tuple<Point2> with: (as-method => true)
+  segments: Tuple<LineSegment2> with: (as-method => true)
+
+defn Triangle (vs:Tuple<V2d>) -> Triangle:
+  val ps = to-tuple $ seq(Point2, vs)
+  val ss = to-tuple $ for [a,b] in successive-pairs-wrapped(ps) seq : LineSegment2(a,b)
+  Triangle(ps, ss)
+
+defn Triangle () -> Triangle :
+  Triangle $ [V2d(-1.0, -1.0), V2d(1.0, -1.0), V2d(0.0, 1.0)]
+
+defn RightTriangle () -> Triangle :
+  val tri = Triangle()
+  val segs = segments(tri)
+  AngleConstraint(90.0, segs[0], segs[1])
+  tri
+
+defn EquilateralTriangle () -> Triangle :
+  val tri = Triangle()
+  val segs = segments(tri)
+  AngleConstraint(120.0, segs[0], segs[1])
+  AngleConstraint(120.0, segs[1], segs[2])
+  tri
+
+defstruct Rectangle <: Lines2 :
+  points: Tuple<Point2> with: (as-method => true)
+  segments: Tuple<LineSegment2> with: (as-method => true)
+
+defn Rectangle () -> Rectangle :
+  val vs = [V2d(0.0, 0.0), V2d(1.0, 0.0), V2d(1.0, 1.0), V2d(0.0, 1.0)]
+  val ps = to-tuple $ seq(Point2, vs)
+  val segs = to-tuple $ for [a,b] in successive-pairs-wrapped(ps) seq : LineSegment2(a,b)
+  AngleConstraint(90.0, segs[0], segs[1])
+  AngleConstraint(90.0, segs[1], segs[2])
+  AngleConstraint(90.0, segs[2], segs[3])
+  Rectangle(ps, segs)
+
+defn Square () -> Rectangle :
+  val rect = Rectangle()
+  rect
+
+defstruct Rectangle3 <: Lines3 :
+  points: Tuple<Point3> with: (as-method => true)
+  segments: Tuple<LineSegment3> with: (as-method => true)
+
+defn Rectangle3 () -> Rectangle3 :
+  Rectangle3([V3d(0.0, 0.0), V3d(1.0, 0.0), V3d(1.0, 1.0), V3d(0.0, 1.0)])
+
+defn Rectangle3 (vs:Tuple<V3d>) -> Rectangle3 :
+  val ps = to-tuple $ seq(Point3, vs)
+  val segs = to-tuple $ for [a,b] in successive-pairs-wrapped(ps) seq : LineSegment3(a,b)
+  AngleConstraint(90.0, segs[0], segs[1])
+  AngleConstraint(90.0, segs[1], segs[2])
+  AngleConstraint(90.0, segs[2], segs[3])
+  Rectangle3(ps, segs)
+
+defstruct Tetrahedron <: Lines3 :
+  points: Tuple<Point3> with: (as-method => true)
+  segments: Tuple<LineSegment3> with: (as-method => true)
+
+defn Tetrahedron () -> Tetrahedron :
+  val tet = tet-mesh
+  val pts = to-tuple $ seq({ Point3(to-v3d(_)) }, vertices(tet))
+  val segs = to-tuple $ for [s,e] in edges(tet) seq :
+    LineSegment3(pts[s], pts[3])
+  for [s0,s1] in successive-pairs(segs) do :
+    EqualLinesConstraint(s0, s1)
+  Tetrahedron(pts, segs)
+
+defn Tetrahedron (sz:Double) -> Tetrahedron :
+  val tet = Tetrahedron()
+  val segs = segments(tet)
+  PointPointDistanceConstraint(sz, p0(segs[0]), p1(segs[0]))
+  tet
+
+defstruct Polyhedron3 <: Lines3 :
+  points: Tuple<Point3> with: (as-method => true)
+  segments: Tuple<LineSegment3> with: (as-method => true)
+
+defn main () :
+  val sys = System(200)
+  val wp = within with-group(Group(sys)) :
+    val p = Point3(0.0, 0.0, 0.0)
+    val q = Normal3(V3d(1.0, 0.0, 0.0), V3d(0.0, 1.0, 0.0))
+    WorkPlane(p, q)
+  defn launch (f:() -> SolveGeom) :
+    set-calculate-faileds(sys, 1)
+    val g = f()
+    println("DOF %_" % [dof(sys)])
+    if result(sys) == SLVS_RESULT_OKAY :
+      ; visualize(group $ [get-value(l), get-value(circle)])
+      visualize(to-geom(g))
+    else :
+      println("Failed to Solve")
+  defn demo-0 () :
+    within launch() :
+      val l = LineSegment2(Point2(10.0, 20.0), Point2(20.0, 10.0))
+      val arc = CircleArc(Point2(100.0, 120.0), Point2(120.0, 110.0), Point2(115.0, 115.0))
+      val circle = Circle(Point2(200.0, 200.0), Distance(30.0))
+      PointPointDistanceConstraint(30.0, p0(l), p1(l))
+      PointLineDistanceConstraint(10.0, origin(wp), l)
+      VerticalConstraint(l)
+      PointPointDistanceConstraint(15.0, p0(l), origin(wp))
+      EqualRadiusConstraint(arc, circle)
+      DiameterConstraint(2.0 * 17.0, circle)
+      solve(sys, group!())
+      println("LINESEGMENT %_ TO %_" % [get-value(p0(l)), get-value(p1(l))])
+      println("ARC CENTER %_ FROM %_ TO %_" % [get-value(center(arc)), get-value(start(arc)), get-value(end(arc))])
+      println("CIRCLE CENTER %_ RADIUS %_" % [get-value(center(circle)), get-value(radius(circle))])
+      l
+  defn demo-1 () :
+    within launch() :
+      val tri = RightTriangle()
+      AngleConstraint(150.0, segments(tri)[1], segments(tri)[2])
+      PointPointDistanceConstraint(10.0, p0(segments(tri)[0]), p1(segments(tri)[1]))
+      solve(sys, group!())
+      println("DOF %_" % [dof(sys)])
+      println("TRIANGLE %_" % [to-tuple $ seq(get-value, points(tri))])
+      tri
+  defn demo-2 () :
+    within launch() :
+      val tri = EquilateralTriangle()
+      ; PointPointDistanceConstraint(10.0, p0(tri[0]), p1(tri[1]))
+      solve(sys, group!())
+      println("TRIANGLE %_" % [to-tuple $ seq(get-value, points(tri))])
+      tri
+  defn demo-3 () :
+    within launch() :
+      val rect = Rectangle()
+      PointPointDistanceConstraint(10.0, segments(rect)[0])
+      PointPointDistanceConstraint(20.0, segments(rect)[1])
+      solve(sys, group!())
+      println("RECT %_" % [to-tuple $ seq(get-value, points(rect))])
+      rect
+  defn demo-4 () :
+    within launch() :
+      val rect = Rectangle()
+      PointPointDistanceConstraint(10.0, segments(rect)[0])
+      PointPointDistanceConstraint(20.0, segments(rect)[1])
+      val tri = EquilateralTriangle()
+      PointOnLineConstraint(p0(segments(rect)[0]), segments(tri)[0])
+      PointOnLineConstraint(p1(segments(rect)[0]), segments(tri)[0])
+      PointOnLineConstraint(p0(segments(rect)[2]), segments(tri)[1])
+      PointOnLineConstraint(p1(segments(rect)[2]), segments(tri)[2])
+      solve(sys, group!())
+      println("RECT %_" % [to-tuple $ seq(get-value, points(rect))])
+      SolveGeomGroup $ [rect, tri]
+
+  defn demo-5 () :
+    within launch() :
+      val tet = Tetrahedron(10.0)
+      solve(sys, group!())
+      println("TET %_" % [to-tuple $ seq(get-value, points(tet))])
+      tet
+      
+  defn demo-6 () :
+    within launch() :
+      val tet0 = Tetrahedron(15.0)
+      val tet1 = Tetrahedron(20.0)
+      solve(sys, group!())
+      println("TET0 %_" % [to-tuple $ seq(get-value, points(tet0))])
+      println("TET1 %_" % [to-tuple $ seq(get-value, points(tet1))])
+
+      SolveGeomGroup $ [tet0, tet1]
+      ; tet0
+      
+  defn lift-rectangle (r:Rectangle) :
+    val indices = to-inttable<Int> $ for (i in 0 to false, pt in points(r)) seq : id(pt) => i
+    val pts3 = to-tuple $ seq(Point3, points(r))
+    val segs3 = to-tuple $ for seg in segments(r) seq :
+      LineSegment3(pts3[indices[id(p0(seg))]], pts3[indices[id(p1(seg))]])
+    for (p2 in points(r), p3 in pts3) do :
+      PointsCoincidentConstraint(p2, p3)
+    Polyhedron3(pts3, segs3)
+  
+  defn demo-7 () :
+    within launch() :
+      val rect0 = Rectangle()
+      PointPointDistanceConstraint(10.0, segments(rect0)[0])
+      PointPointDistanceConstraint(20.0, segments(rect0)[1])
+      val p = Point3(0.0, 0.0, 0.0)
+      val q = Normal3(V3d(0.0, 1.0, 0.0), V3d(0.0, 0.0, 1.0))
+      val poly0 = lift-rectangle(rect0)
+      val wp1 = WorkPlane(p, q)
+      val rect1 = within with-workplane(wp1) :
+        val rect1 = Rectangle()
+        PointPointDistanceConstraint(10.0, segments(rect0)[0])
+        PointPointDistanceConstraint(20.0, segments(rect0)[1])
+        rect1
+      val poly1 = lift-rectangle(rect1)
+      PointsCoincidentConstraint(points(poly0)[1], points(poly1)[1])
+      PointsCoincidentConstraint(points(poly0)[2], points(poly1)[2])
+      ; val a0 = Point3(0.0, 0.0, 0.0)
+      ; val a1 = Point3(0.0, 0.0, 0.0)
+      ; PointsCoincidentConstraint(p0(segments(rect0)[1]), a0)
+      ; PointsCoincidentConstraint(a0, p0(segments(rect1)[1]))     
+      ; PointsCoincidentConstraint(p1(segments(rect0)[1]), a1)     
+      ; PointsCoincidentConstraint(a1, p1(segments(rect1)[1]))     
+      solve(sys, group!())
+      println("RECT0 %_" % [to-tuple $ seq(get-value, points(rect0))])
+      println("RECT1 %_" % [to-tuple $ seq(get-value, points(rect1))])
+      println("POLY0 %_" % [to-tuple $ seq(get-value, points(poly0))])
+      println("POLY1 %_" % [to-tuple $ seq(get-value, points(poly1))])
+      ; println("A0 %_ A1 %_" % [get-value(a0), get-value(a1)])
+      SolveGeomGroup $ [rect0, rect1]
+      
+  defn demo-8 () :
+    within launch() :
+      val rect0 = Rectangle3()
+      PointPointDistanceConstraint(10.0, segments(rect0)[0])
+      PointPointDistanceConstraint(20.0, segments(rect0)[1])
+      for p in points(rect0) do :
+        PointInPlaneConstraint(p, wp)
+      solve(sys, group!())
+      println("RECT0 %_" % [to-tuple $ seq(get-value, points(rect0))])
+      rect0
+      
+  defn demo-9 () :
+    within launch() :
+      val rect0 = Rectangle3()
+      val q0 = Normal3(V3d(1.0, 0.0, 0.0), V3d(0.0, 1.0, 0.0))
+      val wp0 = WorkPlane(points(rect0)[0], q0)
+      PointPointDistanceConstraint(10.0, segments(rect0)[0])
+      PointPointDistanceConstraint(20.0, segments(rect0)[1])
+      for p in points(rect0)[1 to false] do :
+        PointInPlaneConstraint(p, wp0)
+      ; val rect1 = Rectangle3([V3d(0.0, 0.0, 0.0), V3d(0.0, 1.0, 0.0), V3d(0.0, 1.0, 1.0), V3d(0.0, 0.0, 1.0)])
+      ; val q1 = Normal3(V3d(0.0, 1.0, 0.0), V3d(0.0, 0.0, 1.0))
+      ; val wp1 = WorkPlane(points(rect1)[0], q1)
+      ; PointPointDistanceConstraint(20.0, segments(rect1)[0])
+      ; PointPointDistanceConstraint(10.0, segments(rect1)[1])
+      ; for p in points(rect1)[1 to false] do :
+      ;   PointInPlaneConstraint(p, wp1)
+      ; PointsCoincidentConstraint(points(rect0)[0], points(rect1)[0])
+      ; PointsCoincidentConstraint(points(rect0)[3], points(rect1)[2])
+      solve(sys, group!())
+      println("RECT0 %_" % [to-tuple $ seq(get-value, points(rect0))])
+      ; println("RECT1 %_" % [to-tuple $ seq(get-value, points(rect1))])
+      ; SolveGeomGroup $ [rect0, rect1]
+      ; rect1
+      rect0
+      
+  val g2 = within with-group(Group(sys)) : within with-workplane(wp) :
+    ; demo-0()
+    ; demo-1()
+    ; demo-2()
+    ; demo-3()
+    ; demo-4()
+    ; demo-5()
+    ; demo-6()
+    ; demo-7()
+    ; demo-8()
+    demo-9()
+  false
+
+main()

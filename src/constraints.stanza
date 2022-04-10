@@ -1,0 +1,2124 @@
+defpackage constraints :
+  import core
+  import math
+  import collections
+  import utils/rnd
+  import utils/seqable
+  import utils/math
+  import geom/vec
+  import geom/mat
+  import geom/angle
+  import geom/poseable
+  import geom/polygon
+  import geom/box
+  import geom/shape
+  import geom/bounded
+  import geom/line-segment
+  import geom/polyline
+  import geom/line-loop
+  import geom/polyhedron
+  import geom/polyhedra
+  ; import geom/gfx
+  import geom/arc-ball
+  import calculus
+  import stz/asmjit
+
+; TODO: MOVE TO GEOM
+defn atan2 (v:V3f) -> Float :
+  atan2(y(v), x(v))
+
+public var PREFIX = to-symbol("")
+
+public defn make-instance<?T> (instance-name:Symbol, fab:Symbol -> ?T&Module) -> T :
+  let-var PREFIX = symbol-join([PREFIX instance-name "/"]) :
+    fab(instance-name)
+
+public deftype Entity <: Equalable
+public defmulti id (e:Entity) -> Symbol
+public defmulti sub-id (e:Entity, id:Symbol)
+public defmulti copy<?T> (e:?T&Entity, new-id:Symbol, copied:HashTable<Symbol,Entity>) -> T
+public defmulti draw (e:Entity, size:Float)
+public defmulti vars (e:Entity) -> Seqable<AnyVar>
+
+defmethod draw (e:Entity, size:Float) : false
+
+defmethod equal? (a:Entity, b:Entity) -> True|False :
+  id(a) == id(b)
+
+public deftype AnyVar <: Entity
+public defmulti x (v:AnyVar) -> Float
+public defmulti set-x (v:AnyVar, x:Float)
+public defmulti dx (v:AnyVar) -> Float
+public defmulti set-dx (v:AnyVar, x:Float)
+public defmulti exp (v:AnyVar) -> Exp
+public defmulti update (v:AnyVar) -> False
+public defmulti copy (v:AnyVar, name:Symbol) -> AnyVar
+  
+public defstruct ExpVar <: AnyVar :
+  id : Symbol with: (as-method => true, updater => sub-id)
+  e : Exp
+  x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
+  x-off : Int with: (setter => set-x-off, init => -1)
+with:
+  printer => true
+  constructor => #ExpVar
+
+defmethod dx (v:ExpVar) -> Float : 0.0f
+defmethod set-dx (v:ExpVar, d:Float) -> False : false
+
+defmethod exp (v:ExpVar) -> Exp :
+  e(v)
+
+defmethod vars (v:ExpVar) -> Tuple<AnyVar> :
+  [ v ]
+
+public defn exps (v:ExpVar) -> Tuple<Exp> :
+  [ exp(v) ]
+
+defmethod update (v:ExpVar) : false
+
+defmethod copy (v:ExpVar, name:Symbol) -> ExpVar :
+  #ExpVar(name, e(v))
+
+public defstruct SymVar <: AnyVar :
+  id : Symbol with: (as-method => true, updater => sub-id)
+  x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
+  limits : False|Box1f with: (default => false)
+  dx-update? : True|False with: (default => false)           ; is this constant?
+  const? : True|False with: (default => false)
+  next : (SymVar, Int, Float) -> False with: (default => fn (a, b, c) : false) ; used for setting inputs
+  dx : Float with: (as-method => true, setter => set-dx, init => 0.0f)      ; value increment
+  e : Exp with: (setter => set-e, init => Const(0.0f))   ; expression for computing dx
+  x-off : Int with: (setter => set-x-off, init => -1)
+  dx-off : Int with: (setter => set-dx-off, init => -1)
+with:
+  printer => true
+  constructor => #SymVar
+
+defn replace-root-id (id:Symbol, new-root-id:Symbol) -> Symbol :
+  match(index-of-char(to-string(id), '/')) :
+    (i:Int) : symbol-join $ [new-root-id, to-string(id)[i to false]]
+    (i:False) : symbol-join $ [new-root-id, '/', id]
+
+defmethod copy (s:SymVar, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> SymVar :
+  set?(copied, id(s), { sub-id(s, replace-root-id(id(s), new-root-id)) }) as SymVar
+
+public defn full-name (id:Symbol) -> Symbol :
+  symbol-join([PREFIX id])
+
+public defn SymVar (id:Symbol, x:Float, next:(SymVar, Int, Float) -> False) -> SymVar :
+  #SymVar(full-name(id), x, false, false, false, next)
+
+public defn SymVar (id:Symbol, x:Float, limits:Box1f) -> SymVar :
+  #SymVar(id, x, limits, lo(limits) != hi(limits))
+
+public defn SymVar (id:Symbol, x:Float, dx-update?:True|False, const?:True|False) -> SymVar :
+  #SymVar(id, x, false, dx-update?, const?)
+
+public defn SymVar (id:Symbol, x:Float, dx-update?:True|False) -> SymVar :
+  SymVar(id, x, dx-update?, not dx-update?)
+
+public defn SymVar (id:Symbol, x:Float) -> SymVar :
+  SymVar(id, x, true)
+
+public defn SymVar (id:Symbol) -> SymVar :
+  SymVar(id, 0.0f)
+
+defmethod copy (v:SymVar, name:Symbol) -> SymVar :
+  #SymVar(name, x(v), limits(v), dx-update?(v), const?(v))
+
+public defstruct Vec3Exp :
+  x : Exp
+  y : Exp
+  z : Exp
+with:
+  printer => true
+
+public defn xy (v:Vec3Exp) :
+  Vec3Exp(x(v), y(v), Const(0.0f))
+
+public defn xz (v:Vec3Exp) :
+  Vec3Exp(x(v), z(v), Const(0.0f))
+
+public defn Const (v:V3f) -> Vec3Exp :
+  Vec3Exp(Const(x(v)), Const(y(v)), Const(z(v)))
+
+public defn exps (ve:Vec3Exp) -> Tuple<Exp> :
+  [x(ve), y(ve), z(ve)]
+
+defmethod exp (v:SymVar) -> Exp :
+  if const?(v) :
+    Const(x(v))
+  else : 
+    Variable(id(v))
+
+defmethod vars (v:SymVar) -> Tuple<AnyVar> :
+  [ v ]
+
+public defn exps (v:SymVar) -> Tuple<Exp> :
+  [ exp(v) ]
+
+public defn exps (e:Exp) -> Tuple<Exp> :
+  [ e ]
+
+public defn exps (v:Vertex) -> Tuple<Exp> :
+  [exp(x(v)), exp(y(v)), exp(z(v))]
+
+public defn get (v:Vec3Exp, i:Int) -> Exp :
+  if i == 0 :
+    x(v)
+  else if i == 1 :
+    y(v)
+  else if i == 2 :
+    z(v)
+  else : ; TODO
+    Const(0.0f)
+
+public defstruct MatExp <: Array<Exp> :
+  m : Array<Exp>
+with:
+  printer => true
+
+public defstruct Mat <: Entity :
+  id : Symbol with: (as-method => true, updater => sub-id)
+  values : Tuple<AnyVar>
+with:
+  printer => true
+
+public defn Mat (id:Symbol, me:MatExp) -> Mat :
+  val n = full-name(id)
+  Mat(id, to-tuple $ for (e in me, i in 0 to false) seq : #ExpVar(add-suffix(id, to-symbol(i)), e))
+
+defmethod vars (e:Mat) : values(e)
+
+public defn value (m:Mat) -> Mat44f :
+  Mat44f(for v in values(m) map : x(v))
+
+public defn MatExp (m00:Exp,m01:Exp,m02:Exp,m03:Exp,
+                    m10:Exp,m11:Exp,m12:Exp,m13:Exp,
+                    m20:Exp,m21:Exp,m22:Exp,m23:Exp,
+                    m30:Exp,m31:Exp,m32:Exp,m33:Exp) -> MatExp :
+  MatExp(to-array<Exp> $ [m00,m01,m02,m03, m10,m11,m12,m13, m20,m21,m22,m23, m30,m31,m32,m33])
+
+defmethod get (sm:MatExp, i:Int) -> Exp :
+  m(sm)[i]
+
+defmethod set (sm:MatExp, i:Int, v:Exp) -> False :
+  m(sm)[i] = v
+
+public defn get (sm:MatExp, x:Int, y:Int) -> Exp :
+  m(sm)[x * 4 + y]
+
+public defn set (sm:MatExp, x:Int, y:Int, v:Exp) -> False :
+  m(sm)[x * 4 + y] = v
+
+defmethod length (s:MatExp) : 16
+
+public defn id-mat-exp () -> MatExp :
+  MatExp( Const(1.0f), Const(0.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f), Const(1.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f), Const(0.0f),  Const(1.0f),  Const(0.0f),
+          Const(0.0f), Const(0.0f),  Const(0.0f),  Const(1.0f))
+
+public defn reflect-x-mat-exp () -> MatExp :
+  MatExp( Const(-1.0f), Const(0.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(1.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(1.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+ 
+public defn reflect-y-mat-exp () -> MatExp :
+  MatExp( Const(1.0f),  Const(0.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(-1.0f),  Const(0.0f), Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(1.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+ 
+public defn reflect-z-mat-exp () -> MatExp :
+  MatExp( Const(1.0f),  Const(0.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(1.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(-1.0f), Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+ 
+public defn reflect-xy-mat-exp () -> MatExp :
+  MatExp( Const(0.0f),  Const(1.0f),  Const(0.0f),  Const(0.0f),
+          Const(1.0f),  Const(0.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(1.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+ 
+public defn reflect-xz-mat-exp () -> MatExp :
+  MatExp( Const(0.0f),  Const(0.0f),  Const(1.0f),  Const(0.0f),
+          Const(0.0f),  Const(1.0f),  Const(0.0f),  Const(0.0f),
+          Const(1.0f),  Const(0.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+ 
+public defn reflect-yz-mat-exp () -> MatExp :
+  MatExp( Const(1.0f),  Const(0.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(1.0f),  Const(0.0f),
+          Const(0.0f),  Const(1.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+
+public defn rot-x-mat-exp (theta:Exp) -> MatExp :
+  MatExp( Const(1.0f),  Const(0.0f),  Const(0.0f),  Const(0.0f),
+          Const(0.0f),  cos(theta),   Const(-1.0f) * sin(theta),  Const(0.0f),
+          Const(0.0f),  sin(theta),   cos(theta),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+
+public defn rot-y-mat-exp (theta:Exp) -> MatExp :
+  MatExp( cos(theta),  Const(0.0f),  sin(theta),  Const(0.0f),
+          Const(0.0f),  Const(1.0f),   Const(0.0f), Const(0.0f),
+          Const(-1.0f) * sin(theta),  Const(0.0f),  cos(theta),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+
+public defn rot-z-mat-exp (theta:Exp) -> MatExp :
+  MatExp( cos(theta),  Const(-1.0f) * sin(theta),  Const(0.0f),  Const(0.0f),
+          sin(theta), cos(theta), Const(0.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(1.0f),  Const(0.0f),
+          Const(0.0f),  Const(0.0f),  Const(0.0f),  Const(1.0f))
+
+public defn mag-mat-exp (s:Float) -> MatExp :
+  MatExp(Const(s), Const(0.0f), Const(0.0f), Const(0.0f),
+         Const(0.0f), Const(s), Const(0.0f), Const(0.0f),
+         Const(0.0f), Const(0.0f), Const(s), Const(0.0f),
+         Const(0.0f), Const(0.0f), Const(0.0f), Const(1.0f))
+ 
+public defn mag-mat-exp (s:Vec3Exp) -> MatExp :
+  MatExp(x(s), Const(0.0f), Const(0.0f), Const(0.0f),
+         Const(0.0f), y(s), Const(0.0f), Const(0.0f),
+         Const(0.0f), Const(0.0f), z(s), Const(0.0f),
+         Const(0.0f), Const(0.0f), Const(0.0f), Const(1.0f))
+
+public defn mov-mat-exp (t:Vec3Exp) -> MatExp :
+  MatExp(Const(1.0f), Const(0.0f), Const(0.0f), Const(0.0f),
+         Const(0.0f), Const(1.0f), Const(0.0f), Const(0.0f),
+         Const(0.0f), Const(0.0f), Const(1.0f), Const(0.0f),
+         t[0], t[1], t[2], Const(1.0f))
+
+public defn times (m:MatExp, sv:Vec3Exp) -> Vec3Exp :
+  val px = x(sv) * m[0,0] + y(sv) * m[1,0] + z(sv) * m[2,0] + m[3,0]
+  val py = x(sv) * m[0,1] + y(sv) * m[1,1] + z(sv) * m[2,1] + m[3,1]
+  val pz = x(sv) * m[0,2] + y(sv) * m[1,2] + z(sv) * m[2,2] + m[3,2]
+  val pw = x(sv) * m[0,3] + y(sv) * m[1,3] + z(sv) * m[2,3] + m[3,3]
+  Vec3Exp(px / pw, py / pw, pz / pw)
+
+public defn times (a:MatExp, b:MatExp) -> MatExp :
+  val res = id-mat-exp()
+  for i in 0 to 4 do :
+    for j in 0 to 4 do :
+      var sum: Exp = Const(0.0f)
+      for k in 0 to 4 do :
+        sum = sum + a[i,k] * b[k,j]
+      res[i, j] = sum
+  res
+
+public defstruct SimplePoseExp :
+  mov: Vec3Exp
+  axis: Int
+  rot: Exp
+
+val simple-rot-to-mat-exp-funs = [rot-x-mat-exp, rot-y-mat-exp, rot-z-mat-exp]
+
+public defn to-mat-exp (p:SimplePoseExp) -> MatExp :
+;  simple-rot-to-mat-exp-funs[axis(p)](rot(p)) * mov-mat-exp(mov(p))
+   mov-mat-exp(mov(p)) * simple-rot-to-mat-exp-funs[axis(p)](rot(p))
+
+; public defstruct PoseExp :
+;   mov: Vec3Exp
+;   rot: Vec3Exp
+; 
+; public defstruct QuatExp :
+;   w: Exp
+;   v: Vec3Exp
+; 
+; public defn to-mat-exp (p:PoseExp) -> MatExp :
+;   (quat-to-mat-exp $ quat-from-euler-exp $ rot(p)) * mov-mat-exp(mov(p))
+; 
+; defn sin-cos-tup (rads:Exp) -> [Exp, Exp] :
+;   [sin(rads), cos(rads)]
+; 
+; public defn quat-from-axis-angle (axis:Vec3Exp, angle:Exp) :
+;   val a2 = angle / Const(2.0f)
+;   QuatExp(cos(a2), sin(a2) * axis)
+; 
+; public defn quat-from-euler (radz:Vec3Exp) -> QuatExp :
+;   val [sr cr] = sin-cos-tup(Const(0.5f) * x(radz))
+;   val [sp cp] = sin-cos-tup(Const(0.5f) * y(radz))
+;   val [sy cy] = sin-cos-tup(Const(0.5f) * z(radz))
+;   QuatExp(       cy * cr * cp + sy * sr * sp,
+;           Vec3Exp(cy * sr * cp - sy * cr * sp,
+;                  cy * cr * sp + sy * sr * cp,
+;                  sy * cr * cp - cy * sr * sp))
+; 
+; public defn quat-to-mat-exp (q:QuatExp) -> MatExp :
+;   val [ wx,  wy,  wz] = [w(q) * x(q), w(q) * y(q), w(q) * z(q)]
+;   val [ xx,  xy,  xz] = [x(q) * x(q), x(q) * y(q), x(q) * z(q)]
+;   val [ yy,  yz,  zz] = [y(q) * y(q), y(q) * z(q), z(q) * z(q)]
+;   val [m00, m01, m02] =
+;     [Const(1.0f) - Const(2.0f) * (yy + zz),               Const(2.0f) * (xy - wz),               Const(2.0f) * (xz + wy)]
+;   val [m10, m11, m12] =
+;     [              Const(2.0f) * (xy + wz), Const(1.0f) - Const(2.0f) * (xx + zz),               Const(2.0f) * (yz - wx)]
+;   val [m20, m21, m22] =
+;     [              Const(2.0f) * (xz - wy),               Const(2.0f) * (yz + wx), Const(1.0f) - Const(2.0f) * (xx + yy)]
+;   MatExp(        m00,         m01,         m02, Const(0.0f),
+;                  m10,         m11,         m12, Const(0.0f),
+;                  m20,         m21,         m22, Const(0.0f),
+;          Const(0.0f), Const(0.0f), Const(0.0f), Const(1.0f))
+; public defn quat-from-axis (axis:Vec3Exp, rads:Exp) -> QuatExp :
+;   val angle = rads / Const(2.0f)
+;   Quat(cos(angle), sin(angle) * normalize(axis))
+; 
+
+
+public defstruct PlaneExp :
+  center : Vec3Exp
+  normal : Vec3Exp
+with:
+  printer => true
+
+public defn exp (p:Plane) -> PlaneExp :
+  PlaneExp(exp(center(p)), exp(normal(p)))
+
+public defstruct Vertex <: Entity :
+  id : Symbol with: (as-method => true, updater => sub-id)
+  ref? : True|False with: (default => false)
+  x : AnyVar
+  y : AnyVar
+  z : AnyVar
+with:
+  printer => true
+
+public defn Vertex (id:Symbol, v:Vec3Exp) -> Vertex :
+  val n = full-name(id)
+  Vertex(n, false, #ExpVar(add-suffix(n, `x), x(v)), #ExpVar(add-suffix(n, `y), y(v)), #ExpVar(add-suffix(n, `z), z(v)))
+
+public defn exp (v:Vertex) -> Vec3Exp :
+  Vec3Exp(exp(x(v)), exp(y(v)), exp(z(v)))
+  
+public defn init (v:Vertex) -> V3f :
+  V3f(x(x(v)), x(y(v)), x(z(v)))
+  
+public defn add-suffix (id:Symbol, suffix:Symbol) : symbol-join([id "/" suffix])
+
+public defn Vertex (id:Symbol, ref?:True|False, init:V3f, dx-update?:True|False) -> Vertex :
+  val v = last(VERTEX-MATRIX-STACK) * init
+  val n = full-name(id)
+  Vertex(n, ref?,
+         #SymVar(add-suffix(n, `x), x(v), false, dx-update?, not dx-update?),
+         #SymVar(add-suffix(n, `y), y(v), false, dx-update?, not dx-update?),
+         #SymVar(add-suffix(n, `z), z(v), false, dx-update?, not dx-update?))
+
+public defn Vertex (id:Symbol, init:V3f) -> Vertex :
+  Vertex(id, false, init, true)
+
+defmethod copy (v:Vertex, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> Vertex :
+  defn do-copy () :
+    val nid = replace-root-id(id(v), new-root-id)
+    Vertex(nid, ref?(v),
+           copy(x(v), add-suffix(nid, `x))
+           copy(y(v), add-suffix(nid, `y))
+           copy(z(v), add-suffix(nid, `z)))
+  set?(copied, id(v), do-copy) as Vertex
+
+val VERTEX-MATRIX-STACK = Vector<Mat44f>()
+
+public defn push-matrix (m:Mat44f) :
+  add(VERTEX-MATRIX-STACK, last(VERTEX-MATRIX-STACK) * m)
+  
+public defn push-matrix () :
+  add(VERTEX-MATRIX-STACK, id-mat44f())
+  
+push-matrix()
+
+public defn pop-matrix () :
+  pop(VERTEX-MATRIX-STACK)
+
+public defn op-matrix (m:Mat44f) :
+  val n = length(VERTEX-MATRIX-STACK)
+  VERTEX-MATRIX-STACK[n - 1] = VERTEX-MATRIX-STACK[n - 1] * m
+
+public defn matrix<?T> (f:() -> ?T, m:Mat44f) -> T :
+  push-matrix(m)
+  val res = f()
+  pop-matrix()
+  res
+
+public defn matrix (f:() -> ?) :
+  matrix(f, id-mat44f())
+
+
+public defn pos (v:Vertex) -> V3f :
+  V3f(x(x(v)), x(y(v)), x(z(v)))
+
+public defn set-pos (v:Vertex, pos:V3f) -> False :
+  set-x(x(v), x(pos))
+  set-x(y(v), y(pos))
+  set-x(z(v), z(pos))
+
+public defn vel (v:Vertex) -> V3f :
+  V3f(dx(x(v)), dx(y(v)), dx(z(v)))
+
+public defn update (v:Vertex) :
+  update(x(v))
+  update(y(v))
+  update(z(v))
+
+public defstruct Circle <: Entity :
+  id : Symbol with: (as-method => true)
+  center : Vertex
+  radius : AnyVar
+  ref? : True|False
+  measure? : True|False
+with:
+  constructor => #Circle
+  printer => true
+
+defmethod copy (c:Circle, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> Circle :
+  defn do-copy () :
+    #Circle(replace-root-id(id(c), new-root-id),
+            copy(center(c), new-root-id, copied)
+            copy(radius(c), new-root-id, copied)
+            ref?(c),
+            measure?(c))
+  set?(copied, id(c), do-copy) as Circle
+
+public defn Circle (id:Symbol, center:Vertex, radius:AnyVar, ref?:True|False, measure?:True|False) -> Circle :
+  #Circle(symbol-join([PREFIX id]), center, radius, ref?, measure?)
+
+public defn Circle (id:Symbol, center:Vertex, radius:AnyVar) -> Circle :
+  Circle(id, center, radius, false, false)
+
+public defstruct Plane <: Entity :
+  id : Symbol with: (as-method => true)
+  center : Vertex
+  normal : Vertex
+with:
+  constructor => #Plane
+  printer => true
+
+defmethod copy (p:Plane, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> Plane :
+  defn do-copy () :
+    #Plane(replace-root-id(id(p), new-root-id),
+           copy(center(p), new-root-id, copied)
+           copy(normal(p), new-root-id, copied))
+  set?(copied, id(p), do-copy) as Plane
+
+public defn Plane (id:Symbol, center:Vertex, normal:Vertex) -> Plane :
+  #Plane(symbol-join([PREFIX id]), center, normal)
+
+public defstruct Edge <: Entity :
+  id : Symbol with: (as-method => true)
+  v0 : Vertex
+  v1 : Vertex
+  ref? : True|False
+  measure? : True|False
+with:
+  constructor => #Edge
+  printer => true
+
+defmethod vars (e:Edge) -> Seqable<AnyVar> :
+  cat(vars(v0(e)), vars(v1(e)))
+
+defmethod copy (e:Edge, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> Edge :
+  defn do-copy () :
+    #Edge(replace-root-id(id(e), new-root-id),
+          copy(v0(e), new-root-id, copied)
+          copy(v1(e), new-root-id, copied)
+          ref?(e),
+          measure?(e))
+  set?(copied, id(e), do-copy) as Edge
+
+public defn Edge (id:Symbol, v0:Vertex, v1:Vertex, ref?:True|False, measure?:True|False) -> Edge :
+  #Edge(symbol-join([PREFIX id]), v0, v1, ref?, measure?)
+
+public defn Edge (id:Symbol, v0:Vertex, v1:Vertex) -> Edge :
+  Edge(id, v0, v1, false, false)
+
+; Angle between a0 -> a1 and b0 -> b1
+public defstruct Angle <: Entity :
+  id : Symbol with: (as-method => true)
+  a0 : Vertex
+  a1 : Vertex
+  b0 : Vertex
+  b1 : Vertex
+  measure? : True|False
+with:
+  constructor => #Angle
+  printer => true
+
+defmethod copy (a:Angle, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> Angle :
+  defn do-copy () :
+    #Angle(replace-root-id(id(a), new-root-id),
+           copy(a0(a), new-root-id, copied)
+           copy(a1(a), new-root-id, copied)
+           copy(b0(a), new-root-id, copied)
+           copy(b1(a), new-root-id, copied)
+           measure?(a))
+  set?(copied, id(a), do-copy) as Angle
+
+public defn Angle (id:Symbol, a0:Vertex, a1:Vertex, b0:Vertex, b1:Vertex, measure?:True|False) -> Angle :
+  #Angle(symbol-join([PREFIX id]), a0, a1, b0, b1, measure?)
+
+public defn Angle (id:Symbol, a0:Vertex, a1:Vertex, b0:Vertex, b1:Vertex) -> Angle :
+  Angle(id, a0, a1, b0, b1, false)
+
+defmethod vars (e:Angle) -> Seqable<AnyVar> :
+  cat-all $ seq(vars, [a0(e), a1(e), b0(e), b1(e)])
+
+defn connected-vertices (e0:Edge, e1:Edge) -> [Vertex, Vertex, Vertex] :
+  if v0(e0) == v0(e1) :
+    [v1(e0), v0(e0), v1(e1)]
+  else if v1(e0) == v0(e1) :
+    [v0(e0), v1(e0), v1(e1)]
+  else if v1(e0) == v1(e1) :
+    [v0(e0), v1(e0), v0(e1)]
+  else : ; if v0(e0) == v1(e1) :
+    [v1(e0), v0(e0), v0(e1)]
+
+public defn ConnectedAngle (id:Symbol, e0:Edge, e1:Edge, measure?:True|False) -> Angle :
+  val [v0, v1, v2] = connected-vertices(e0, e1)
+  Angle(id, v1, v0, v1, v2, measure?)
+
+public defn Angle (id:Symbol, e0:Edge, e1:Edge, measure?:True|False) -> Angle :
+  Angle(id, v0(e0), v1(e0), v0(e1), v1(e1), measure?)
+
+public deftype Module <: Entity
+public defmulti entities (m:Module) -> Tuple<Entity>
+public defmulti sub-entities (m:Module, es:Tuple<Entity>)
+public defmulti cost (m:Module) -> Exp
+public defmulti sub-cost (m:Module, c:Exp)
+
+defmethod copy (m:Module, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> Module :
+  println("Copy unimplemented for module")
+  m
+
+defmethod vars (m:Module) : []
+
+public defn vertices (m:Module) -> Seqable<Vertex> :
+  filter-by<Vertex>(entities(m))
+
+public defstruct Cost :
+  value : Exp
+  gain : Float with : ( setter => set-gain, default => 1.0f )
+  cost-off : Int with: ( setter => set-cost-off, init => -1 )
+  machine : Machine with: ( setter => set-machine, init => Machine(FloatArray(0), [], false) )
+
+public defstruct Body :
+  symtab : HashTable<Symbol,SymVar>
+  symvars : Tuple<SymVar>
+  expvars : Tuple<ExpVar>
+  entities : Tuple<Entity>
+  vertices : Tuple<Vertex>
+  ; edges : Tuple<Edge>
+  ; circles : Tuple<Circle>
+  ; planes : Tuple<Plane>
+  ; angles : Tuple<Angle>
+  costs : Tuple<Cost>
+  vertex-size : Float with: ( default => 0.25f )
+  t : Float with: ( setter => set-t, init => 0.0f )
+  tick : Int with: ( setter => set-tick, init => 0 )
+with:
+  printer => true
+
+public defn all-entities (m:Module) -> Seqable<Entity> :
+  generate<Entity> :
+    for e in entities(m) do :
+      match(e) :
+        (e:Module) : do(yield, all-entities(e))
+        (e:Entity) : yield(e)
+
+public defn all-vertices (m:Module) -> Seqable<Vertex> :
+  filter-by<Vertex>(all-entities(m))
+
+public defn total-cost (m:Module) -> Exp :
+  reduce(plus, cost(m), seq(total-cost, filter-by<Module>(entities(m))))
+
+public defn Body (top:Module) -> Body :
+  val entities = to-tuple $ all-entities(top)
+
+  ; val etc-vars = to-tuple $ filter-by<AnyVar>(entities)
+  ; val edges = to-tuple $ filter-by<Edge>(entities),
+  val vertices = to-tuple $ filter-by<Vertex>(entities)
+  ; val circles = to-tuple $ filter-by<Circle>(entities)
+  ; val planes = to-tuple $ filter-by<Plane>(entities)
+  ; val angles = to-tuple $ filter-by<Angle>(entities)
+  ; val vars = to-tuple $ cat-all $ [etc-vars, seq-cat(vars, vertices), seq-cat(vars, circles), seq-cat(vars, planes)],
+
+  val vars = to-tuple $ unique $ seq-cat(vars, entities)
+  val symvars = to-tuple $ filter-by<SymVar>(vars)
+  val expvars = to-tuple $ filter-by<ExpVar>(vars)
+  val symtab = to-hashtable<Symbol,SymVar> $ for v in symvars seq : id(v) => v
+  Body(symtab, symvars, expvars, entities, vertices, ; edges, circles, planes, angles,
+       [ Cost(total-cost(top)) ])
+
+defmethod print (o:OutputStream, tab:HashTable<?,?>) :
+  print(o, to-tuple $ tab)
+
+defmethod vars (v:Vertex) -> Tuple<AnyVar> :
+ [x(v), y(v), z(v)]
+
+defmethod vars (c:Circle) -> Seq<AnyVar> :
+  cat([radius(c)], vars(center(c)))
+
+defmethod vars (p:Plane) -> Seq<AnyVar> :
+  cat(vars(center(p)), vars(normal(p)))
+
+public defn simplify (e:Exp) -> Exp :
+  simplify(e, 0)
+
+public defn eval (e:Exp, vs:HashTable<Symbol,SymVar>, d:Int) -> Float :
+  ; print(">>%_ " % [d])
+  ; for i in 0 to d do : print(" ")
+  ; println(e)
+  val res = match(e) :
+    (e:Const) : value(e)
+    (e:Variable) : x(vs[name(e)]) ; (println("VAR %_ -> %_" % [name(e), x(vs[name(e)])]), 
+    ; (e:Define) : set-x(vs[name(e)], eval(a(e), vs, d + 1))
+    (e:Add) : eval(a(e), vs, d + 1) + eval(b(e), vs, d + 1)
+    (e:Subtract) : eval(a(e), vs, d + 1) - eval(b(e), vs, d + 1)
+    (e:Multiply) : eval(a(e), vs, d + 1) * eval(b(e), vs, d + 1)
+    (e:Divide) : (val a = eval(a(e), vs, d + 1), val b = eval(b(e), vs, d + 1), 0.0f when (b == 0.0f) else (a / b))
+    (e:Power) : pow(eval(a(e), vs, d + 1), eval(b(e), vs, d + 1))
+    (e:Log) : log(eval(a(e), vs, d + 1))
+    (e:Acos) : acos(eval(a(e), vs, d + 1))
+    (e:Sin) : sin(eval(a(e), vs, d + 1))
+    (e:Cos) : cos(eval(a(e), vs, d + 1))
+    (e:Atan2) : atan2(eval(a(e), vs, d + 1), eval(b(e), vs, d + 1))
+    (e:Print) : (val r = eval(a(e), vs, d + 1), println("%_: %_" % [id(e), r]), r)
+  ; print("<<%_ " % [d])
+  ; for i in 0 to d do : print(" ")
+  ; println(res)
+  res  
+
+public defn apply (v:SymVar, vs:HashTable<Symbol,SymVar>) -> Float :
+  val x = eval(e(v), vs, 0)
+  set-dx(v, -1.0f * x)
+  x
+  ; println("UPDATE %_ -> %_: %_" % [id(v), x, e(v)])
+
+public defn apply (b:Body) :
+  for c in costs(b) do :
+    val machine = machine(c)
+    val dat = data(machine)
+    for v in symvars(b) do :
+      dat[x-off(v)] = x(v)
+      set-dx(v, 0.0f)
+      ; println("%_ X[%_] %_" % [id(v), x-off(v), dat[x-off(v)]])
+    run(machine)
+    ; println("COST %_ ? %_" % [eval(cost(b), vars(b), 0), dat[cost-off(b)]])
+    ; println("COST %_" % [dat[cost-off(b)]])
+    for v in symvars(b) do :
+      ; val dx = apply(v, vars(b))
+      ; if dat[dx-off(v)] != 0.0f :
+      ;   println("%_ X[%_] %_ DX[%_] %_" % [id(v), x-off(v), dat[x-off(v)], dx-off(v), dat[dx-off(v)]])
+      set-dx(v, dx(v) - dat[dx-off(v)])
+    ; TODO: run these in special machine
+    for v in expvars(b) do :
+      val x = dat[x-off(v)]
+      set-x(v, x)
+      ; println("%_[%_] = %_" % [v, x-off(v), x])
+
+public defn clear (v:SymVar) :
+  set-dx(v, 0.0f)
+
+; public var DELTA:Float = 0.05f
+public var DELTA:Float = 0.1f * 0.05f
+
+defmethod update (v:SymVar) :
+  if dx-update?(v) :
+    ; println("%_ %_ + %_ * %_" % [v, x(v), DELTA, dx(v)])
+    val new-x0 = x(v) + DELTA * dx(v)
+    val new-x = new-x0
+    ; val new-x = match(limits(v)) :
+    ;   (b:Box1f) : max(lo(b), min(hi(b), new-x0))
+    ;   (b:False) : new-x0
+    ; println("%_ %_ + %_ => %_" % [name(v), x(v), DELTA * dx(v), new-x])
+    set-x(v, new-x)
+
+public defn update (b:Body) :
+  for v in symvars(b) do :
+    update(v)
+
+public defn next (b:Body, tick:Int, time:Float) :
+  for v in symvars(b) do :
+    next(v)(v, tick, time) ; if next?(v) : 
+
+public defn clear (b:Body) :
+  for v in symvars(b) do :
+    clear(v)
+
+public deftype Inst
+public defstruct LoadOp <: Inst : (d:Int, a:Float)
+public defstruct MoveOp <: Inst : (d:Int, a:Int)
+public defstruct AddOp <: Inst : (d:Int, a:Int, b:Int)
+public defstruct SubtractOp <: Inst : (d:Int, a:Int, b:Int)
+public defstruct MultiplyOp <: Inst : (d:Int, a:Int, b:Int)
+public defstruct DivideOp <: Inst : (d:Int, a:Int, b:Int)
+public defstruct PowerOp <: Inst : (d:Int, a:Int, b:Int)
+public defstruct LogOp <: Inst : (d:Int, a:Int)
+public defstruct AcosOp <: Inst : (d:Int, a:Int)
+public defstruct SinOp <: Inst : (d:Int, a:Int)
+public defstruct CosOp <: Inst : (d:Int, a:Int)
+public defstruct Atan2Op <: Inst : (d:Int, a:Int, b:Int)
+public defstruct PrintOp <: Inst : (d:Int, id:Int, a:Int)
+
+public deftype Deduper
+public defmulti compile (d:Deduper, e:Exp) -> Variable
+public defmulti instructions (d:Deduper) -> Vector<Exp>
+
+public defn Deduper () :
+  val tab = HashTable<Exp,Symbol>()
+  val exps = Vector<Exp>()
+  new Deduper :
+    defmethod compile (this, e:Exp) -> Variable :
+      let loop (e:Exp = e) :
+        defn define-tmp (name:Symbol, c:Exp) :
+          tab[c] = name
+          add(exps, c)
+          Variable(name)
+        val c = map(loop, e)
+        match(c) :
+          (e:Variable) :
+            e
+          ; (e:Define) :
+          ;   define-tmp(name(e), a(e))
+          (e:Exp) :
+            if key?(tab, c) :
+              Variable(tab[c])
+            else :
+              define-tmp(symbol-join(["tmp-" length(tab)]), c)
+    defmethod instructions (this) -> Vector<Exp> :
+      exps
+
+defn tmp-offset (name:Symbol) :
+  val num-string = to-string(name)[4 to false]
+  to-int(num-string) as Int
+
+defn tmp? (name:Symbol) -> True|False :
+  prefix?(to-string(name), "tmp-")
+
+defn offset (e:Exp, sym-table:HashTable<Symbol,SymVar>) :
+  val v = e as Variable
+  if tmp?(name(v)) :
+    tmp-offset(name(v))
+  else :
+    x-off(sym-table[name(v)])
+
+defn translate (e:Exp, sym-table:HashTable<Symbol,SymVar>, pc:Int) -> Inst :
+  match(e) :
+    (e:Const) : LoadOp(pc, value(e))
+    (e:Define) : MoveOp(pc, offset(a(e), sym-table))
+    (e:Log) : LogOp(pc, offset(a(e), sym-table))
+    (e:Acos) : AcosOp(pc, offset(a(e), sym-table))
+    (e:Sin) : SinOp(pc, offset(a(e), sym-table))
+    (e:Cos) : CosOp(pc, offset(a(e), sym-table))
+    (e:Atan2) : Atan2Op(pc, offset(a(e), sym-table), offset(b(e), sym-table))
+    (e:Add) : AddOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
+    (e:Subtract) : SubtractOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
+    (e:Multiply) : MultiplyOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
+    (e:Divide) : DivideOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
+    (e:Power) : PowerOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
+    (e:Print) : PrintOp(pc, id(e), offset(a(e), sym-table))
+
+defmethod print (o:OutputStream, i:Inst) :
+  match(i) :
+    (i:LoadOp) : print(o, "%_ = Load %_" % [d(i), a(i)])
+    (i:MoveOp) : print(o, "%_ = Move %_" % [d(i), a(i)])
+    (i:LogOp) : print(o, "%_ = Log %_" % [d(i), a(i)])
+    (i:AcosOp) : print(o, "%_ = Acos %_" % [d(i), a(i)])
+    (i:SinOp) : print(o, "%_ = Sin %_" % [d(i), a(i)])
+    (i:CosOp) : print(o, "%_ = Cos %_" % [d(i), a(i)])
+    (i:Atan2Op) : print(o, "%_ = Atan2 %_, %_" % [d(i), a(i), b(i)])
+    (i:AddOp) : print(o, "%_ = Add %_, %_" % [d(i), a(i), b(i)])
+    (i:SubtractOp) : print(o, "%_ = Sub %_, %_" % [d(i), a(i), b(i)])
+    (i:MultiplyOp) : print(o, "%_ = Mul %_, %_" % [d(i), a(i), b(i)])
+    (i:DivideOp) : print(o, "%_ = Div %_, %_" % [d(i), a(i), b(i)])
+    (i:PowerOp) : print(o, "%_ = Pow %_, %_" % [d(i), a(i), b(i)])
+    (i:PrintOp) : print(o, "%_ = Print %_, %_" % [d(i), id(i), a(i)])
+
+public defstruct Machine :
+  data : FloatArray
+  insts : Tuple<Inst>
+  func : Func|False
+with:
+  printer => true
+
+public var jit?:True|False = true
+public var disassemble?:True|False = false
+public var show-code-size?:True|False = true
+
+public defn compile (exps:Vector<Exp>, b:Body, c:Cost, rt:JitRuntime) -> Machine :
+  val insts = to-tuple $ for (e in exps, pc in 0 to false) seq :
+    translate(e, symtab(b), pc)
+  val jitter = jit ; jit-old when OLD? 
+  val save-offs = to-intset $ cat(seq(dx-off, symvars(b)), seq(x-off, expvars(b)))
+  add(save-offs, cost-off(c))
+  Machine(FloatArray(length(insts) + length(symtab(b)), 0.0f), insts,
+          jitter(insts, save-offs, rt, disassemble?, STANDARD-OUTPUT-STREAM as FileOutputStream) when jit?)
+
+val all-saved-registers = [rbx, rcx, rsi, rdi rdx, r8, r9, r10, r11]
+
+defn save-registers (a:Assembler, regs:Seqable<Gp>) :
+  for reg in regs do : push(a, reg)
+
+defn restore-registers (a:Assembler, regs:Seqable<Gp>) :
+  for reg in reverse $ to-list $ regs do : pop(a, reg)
+
+extern malloc: (long) -> ptr<?>
+extern strcpy: (ptr<byte>, ptr<byte>) -> ptr<?>
+extern printf: (ptr<byte>, ? ...) -> int
+
+lostanza defn printf-format (s:ref<String>) -> ref<Long> :
+  val n = length(s)
+  val d = call-c malloc(n.value + 1)
+  call-c strcpy(d, addr!(s.chars))
+  return new Long{d as long}
+
+lostanza defn printf-addr () -> ref<Long> :
+  return new Long{addr!(printf) as long}
+
+val dump-save-registers = [r8, r9, r10, r11, r12]
+val c-args              = [rdi, rsi, rdx, rcx, r8, r9]
+val c-fp-args           = [xmm0, xmm1, xmm2, xmm3, xmm4, xmm5]
+
+val tmp1 = r13
+
+defn dump (a:Assembler, format:String, args:Tuple<Xmm|Gp|Int|Long>) :
+  save-registers(a, all-saved-registers)
+  push(a, rax)
+  val regs = to-tuple $ for (arg in args, reg in c-args) seq :
+    match(arg) :
+      (arg:Gp|Xmm) : arg
+      (arg:Int|Long) : mov(a, reg, arg)
+  mov(a, r8,  printf-format(format))
+  ;move into saved regs to do a reshuffle in case c-args are in args
+  for (save-reg in dump-save-registers[1 to false], reg in filter-by<Gp>(regs)) do :
+    mov(a, save-reg, reg)
+  ;now can move to real c-args 
+  for (arg in c-args, save-reg in dump-save-registers) do :
+    mov(a, arg, save-reg)
+  val xmm-args = to-tuple $ filter-by<Xmm>(args)
+  for (arg in c-fp-args, reg in xmm-args) do :
+    movss(a, arg, reg)
+  ;clear xmm count register
+  mov(a, rax, to-long(length(xmm-args)))
+  mov(a, tmp1, printf-addr())
+  call(a, tmp1)
+  pop(a, rax)
+  restore-registers(a, all-saved-registers)
+
+extern sinf: (float) -> float
+extern cosf: (float) -> float
+extern acosf: (float) -> float
+extern logf: (float) -> float
+extern atan2f: (float, float) -> float
+extern powf: (float, float) -> float
+
+lostanza defn sinf-addr () -> ref<Long> :
+  return new Long{addr!(sinf) as long}
+
+lostanza defn cosf-addr () -> ref<Long> :
+  return new Long{addr!(cosf) as long}
+
+lostanza defn acosf-addr () -> ref<Long> :
+  return new Long{addr!(acosf) as long}
+
+lostanza defn logf-addr () -> ref<Long> :
+  return new Long{addr!(logf) as long}
+
+lostanza defn atan2f-addr () -> ref<Long> :
+  return new Long{addr!(atan2f) as long}
+
+lostanza defn powf-addr () -> ref<Long> :
+  return new Long{addr!(powf) as long}
+
+defstruct RegInterval <: Equalable :
+  reg : False|Int with: (setter => set-reg)
+  location : Int
+  period : Box1i
+  accesses : Tuple<Int>
+  birth : False|Int
+with:
+  printer => true
+
+defn reg! (m:RegInterval) -> Int : reg(m) as Int
+
+defmethod equal? (a:RegInterval, b:RegInterval) -> True|False :
+  location(a) == location(b) and period(a) == period(b) and birth(a) == birth(b)
+
+defenum RegAction :
+  SPILL
+  LOAD
+  ALLOC
+
+defstruct RegMove :
+  action : RegAction
+  t : Int
+  reg : Int 
+  location : Int
+with:
+  printer => true
+
+defn locations (i:Inst) -> Tuple<Int> :
+  match(i) :
+    (i:LoadOp) : [d(i)]
+    (i:MoveOp) : [d(i), a(i)]
+    (i:LogOp) : [d(i), a(i)]
+    (i:AcosOp) : [d(i), a(i)]
+    (i:SinOp) : [d(i), a(i)]
+    (i:CosOp) : [d(i), a(i)]
+    (i:Atan2Op) : [d(i), a(i), b(i)]
+    (i:AddOp) : [d(i), a(i), b(i)]
+    (i:SubtractOp) : [d(i), a(i), b(i)]
+    (i:MultiplyOp) : [d(i), a(i), b(i)]
+    (i:DivideOp) : [d(i), a(i), b(i)]
+    (i:PowerOp) : [d(i), a(i), b(i)]
+    (i:PrintOp) : [a(i)]
+
+defn dst-location (i:Inst) -> Int :
+  match(i) :
+    (i:LoadOp|MoveOp|LogOp|AcosOp|SinOp|CosOp|Atan2Op|AddOp|SubtractOp|MultiplyOp|DivideOp|PowerOp|PrintOp) : d(i)
+
+defn find-intervals (insts:Seqable<Inst>) -> Seqable<RegInterval> :
+  val periods = IntTable<Box1i>(neg-inf-box1i())
+  val intervals = IntTable<Box1i>(neg-inf-box1i())
+  val accesses = IntTable<List<Int>>(List())
+  val births = to-inttable<Int> $
+    for (i in insts, t in 0 to false) seq :
+      println("%_: %_ -> %_" % [t, i, locations(i)]) when DEBUG?
+      for l in locations(i) do :
+        intervals[l] = union(intervals[l], Box1i(t))
+        accesses[l] = cons(t, accesses[l])
+      dst-location(i) => t
+  for entry in intervals seq :
+    RegInterval(false, key(entry), value(entry), to-tuple $ reverse $ accesses[key(entry)], get?(births, key(entry), false))
+
+defn reg-moves (intervals:Tuple<RegInterval>, num-registers:Int, write-backs:IntSet) -> Seqable<RegMove> :
+  val active = Vector<RegInterval>()
+  val free-registers = to-intset $ (0 to num-registers)
+
+  defn remove-active-interval (i:RegInterval) :
+    remove(active, index-of!(active, i))
+    
+  defn expire-old-interval (j:RegInterval, yield:RegMove -> False) :
+    println("RETIRING[%_]: %_" % [write-backs[location(j)], j]) when DEBUG?
+    yield(RegMove(SPILL, hi(period(j)) + 1, reg(j) as Int, location(j))) when write-backs[location(j)]
+    remove-active-interval(j)
+    add(free-registers, reg(j) as Int)
+    set-reg(j, false)
+
+  defn expire-old-intervals (i:RegInterval, yield:RegMove -> False) :
+    val bound = let loop (k:Int = 0) :
+      if k < length(active) :
+        if empty?(period(active[k]) & period(i)) :
+          loop(k + 1)
+        else :
+          k
+      else :
+        k
+    for j in to-tuple(active[0 to bound]) do :
+      expire-old-interval(j, yield)
+        
+  defn find-last (active:Vector<RegInterval>) -> RegInterval :
+    active[0]
+
+  defn add-hi-sorted (active:Vector<RegInterval>, i:RegInterval) :
+    add(active, i)
+    qsort!(active, { hi(period(_)) < hi(period(_)) })
+
+  defn birth-or-load (i:RegInterval) -> RegAction :
+    ALLOC when lo(period(i)) == birth(i) else LOAD
+
+  defn spill-at-interval (i:RegInterval, yield:RegMove -> False) :
+    val spill = find-last(active)
+    if hi(period(spill)) > hi(period(i)) : ; Does spill live on?
+      set-reg(i, reg(spill))
+      yield(RegMove(SPILL, lo(period(i)), reg(spill) as Int, location(spill)))
+      set-reg(spill, false)
+      remove-active-interval(spill)
+      add-hi-sorted(active, i)
+      yield(RegMove(birth-or-load(i), lo(period(i)), reg(i) as Int, location(i)))
+
+  defn find-register () :
+    val r = next(to-seq(free-registers))
+    remove(free-registers, r)
+    r
+
+  generate<RegMove> :
+    defn trace-yield (m:RegMove) :
+      println(m) when DEBUG?
+      yield(m)
+    for i in lazy-qsort({ lo(period(_)) }, intervals) do :
+      println("I %_: FREE %_: ACTIVE %_" % [i, to-tuple $ free-registers, to-tuple $ seq(location, active)]) when DEBUG?
+      expire-old-intervals(i, trace-yield)
+      if length(active) == num-registers :
+        spill-at-interval(i, trace-yield)
+      else :
+        set-reg(i, find-register())
+        trace-yield(RegMove(birth-or-load(i), lo(period(i)), reg(i) as Int, location(i)))
+        add-hi-sorted(active, i)
+    for i in to-tuple(active) do :
+      expire-old-interval(i, trace-yield)
+      
+defn mdu-reg-moves (insts:Tuple<Inst>, intervals:Tuple<RegInterval>, num-registers:Int, write-backs:IntSet, search-timer:Timer) -> Seqable<RegMove> :
+  val free-registers = to-intset $ (0 to num-registers)
+  val active = Vector<RegInterval>()
+  val loc-intervals = to-inttable<RegInterval> $ for i in intervals seq : location(i) => i
+
+  ; do(println, intervals) when DEBUG?
+
+  defn birth-or-load (t:Int, i:RegInterval) -> RegAction :
+    ALLOC when t == birth(i) else LOAD
+
+  defn find-register () :
+    val r = next(to-seq(free-registers))
+    remove(free-registers, r)
+    r
+
+  defn find-mdu-reg (t:Int) -> RegInterval :
+    start(search-timer)
+    defn find-mdu (loc:RegInterval) -> Int :
+      val accesses = accesses(loc)
+      let loop (i:Int = 0) :
+        if i < length(accesses) :
+          val access = accesses[i]
+          access when access >= t else loop(i + 1)
+        else :
+          length(insts)
+        
+    let loop (i:Int = 0, max-time:Int = -1, max-loc:False|RegInterval = false) :
+      if i < length(active) :
+        val loc = active[i]
+        val time = find-mdu(loc)
+        if time > max-time :
+          loop(i + 1, time,     loc)
+        else :
+          loop(i + 1, max-time, max-loc)
+      else :
+        println("REG %_ MDU %_" % [reg(max-loc as RegInterval), max-time]) when DEBUG?
+        stop(search-timer)
+        max-loc as RegInterval
+
+  defn remove-active-location (i:RegInterval) :
+    remove(active, index-of!(active, i))
+    
+  generate<RegMove> :
+    defn trace-yield (m:RegMove) :
+      println(m) when DEBUG?
+      yield(m)
+    ; println("LOCS %_" % [reg-locations]) when DEBUG?
+    defn use (loc:RegInterval, t:Int) :
+      if reg(loc) is False :
+        val free-reg =
+          if length(free-registers) == 0 :
+            val loc = find-mdu-reg(t)
+            trace-yield(RegMove(SPILL, t, reg!(loc), location(loc))) when (write-backs[location(loc)] or hi(period(loc)) > t)
+            val free-reg = reg!(loc)
+            set-reg(loc, false)
+            remove-active-location(loc)
+            free-reg
+          else :
+            find-register()
+        ; println("USE %_: %_, %_" % [loc, birth-or-load(t, loc), free-reg]) when DEBUG?
+        trace-yield(RegMove(birth-or-load(t, loc), t, free-reg, location(loc)))
+        set-reg(loc, free-reg)
+        add(active, loc)
+    for (inst in insts, t in 0 to false) do :
+      println(inst) when DEBUG?
+      for loc in locations(inst) do :
+        use(loc-intervals[loc], t)
+    for loc in active do :
+      trace-yield(RegMove(SPILL, length(insts), reg!(loc), location(loc))) when write-backs[location(loc)]
+
+; TODO
+; o malloc data
+; o shutdown machine and remove func
+; o create rt and pass in to jit
+; o how to mov xmm to memptr
+
+val SIZEOF-INT = 4
+val c-params = [rdi, rsi, rdx, rcx, r8, r9]
+val MDU? = true
+val ALL-TMPS = [xmm8, xmm9, xmm10, xmm11, xmm12, xmm13, xmm14, xmm15]
+defn need-to-save? (x:Xmm) -> True|False :
+  id(x) < 8
+public var NUM-REGISTERS:Int = length(ALL-TMPS)
+val TMPS = to-tuple $ ALL-TMPS[0 to NUM-REGISTERS]
+public var USE-REGISTERS?:True|False = true
+public var OLD?:True|False = false
+public var COND-OP?:True|False = true
+public var TRACE?:True|False = false
+public var TIME?:True|False = false
+public var DEBUG?:True|False = false
+
+defn push (a:Assembler, reg:Xmm) :
+  movss(a, rax, reg)
+  push(a, rax)
+defn pop (a:Assembler, reg:Xmm) :
+  pop(a, rax)
+  movss(a, reg, rax)
+
+defn jit (insts:Tuple<Inst>, save-offs:IntSet,
+          rt:JitRuntime, disassembling?:True|False, jit-log-file:FileOutputStream) -> Func :
+  val reg-alloc-timer = MillisecondTimer("REG-ALLOC")
+  start(reg-alloc-timer)
+  val reg-search-timer = MillisecondTimer("REG-SEARCH")
+  val ints = to-tuple $ find-intervals(insts)
+  ; for i in ints do : println(i)
+  val moves = to-tuple(mdu-reg-moves(insts, ints, NUM-REGISTERS, save-offs, reg-search-timer) when MDU? else reg-moves(ints, NUM-REGISTERS, save-offs))
+  println("---") when DEBUG?
+  for move in moves do :
+    println(move) when DEBUG?
+  println("---") when DEBUG?
+  val registers = IntTable<Int>()
+  val num-spills = count({ action(_) is SPILL }, moves)
+  val num-loads = count({ action(_) is LOAD }, moves)
+  var num-accesses:Int = 0
+  var num-reads:Int = 0
+  var num-writes:Int = 0
+  var num-register-accesses:Int = 0
+  stop(reg-alloc-timer)
+  println(reg-search-timer)
+  println(reg-alloc-timer)
+  val jit-timer = MillisecondTimer("JIT")
+  start(jit-timer)
+  within (code, ass) = gen-code(rt, show-code-size?, disassembling?, jit-log-file) :
+    val dat = r10
+    mov(ass, dat, c-params[0])
+    defn loc-access (i:Int, count?:True|False, read?:True|False) -> Xmm|MemPtr :
+      ; println("ACCESS %_ %_ REGISTERS %_" % [i, get?(registers, i, false), to-tuple $ registers]) when DEBUG?
+      (num-accesses = num-accesses + 1) when count?
+      val res =
+        if key?(registers, i) :
+          (num-register-accesses = num-register-accesses + 1) when (count? and USE-REGISTERS?)
+          TMPS[registers[i]] when USE-REGISTERS? else MemPtr(dat, i * SIZEOF-INT, SIZEOF-INT)
+        else :
+          MemPtr(dat, i * SIZEOF-INT, SIZEOF-INT)
+      if res is MemPtr :
+        if read? :
+          num-reads = num-reads + 1
+        else :
+          num-writes = num-writes + 1
+      res
+    defn loc-load (x:Xmm, i:Int, use-x?:True|False, count?:True|False) -> Xmm :
+      match(loc-access(i, count?, true)) :
+        (acc:MemPtr) : movss(ass, x, acc)
+        (acc:Xmm) :    movss(ass, x, acc) when use-x? else acc 
+    defn loc-save (i:Int, x:Xmm, count?:True|False) -> Xmm :
+      match(loc-access(i, count?, false)) :
+        (acc:MemPtr) : (movss(ass, acc, x), x)
+        (acc:Xmm) :    (movss(ass, acc, x), acc)
+
+    defn prim-op (di:Int, a1i:Int, a2i:Int, two-op?:True|False, op:(Assembler, Xmm, Xmm) -> Xmm) -> Xmm :
+      ; val a = loc-load(xmm0, a1i, true,  true)
+      ; val b = loc-load(xmm1, a2i, false, true)
+      ; val res = op(ass, a, b)
+      ; loc-save(di, res, true)
+      if key?(registers, di) and two-op? and USE-REGISTERS? :
+        val d = loc-access(di, true, false) as Xmm
+        val a = loc-load(d,    a1i, true,  true)
+        val b = loc-load(xmm1, a2i, false, true)
+        op(ass, a, b)
+      else :
+        val a = loc-load(xmm0, a1i, true,  true)
+        val b = loc-load(xmm1, a2i, false, true)
+        val res = op(ass, a, b)
+        loc-save(di, res, true)
+    defn cond-op (di:Int, ai:Int, bi:Int, zi?:Int, two-op?:True|False, op:(Assembler, Xmm, Xmm) -> ?) -> Xmm :
+      if COND-OP? :
+        val rlab = new-label(ass)
+        val z    = xmm0
+        val z?   = loc-load(xmm1, zi?, false, true)
+        mov(ass, z, mov(ass, rax, bits(0.0f)))
+        ucomiss(ass, z?, z)
+        je(ass, rlab)
+        val res = loc-load(xmm0, ai, true, true)
+        op(ass, res, loc-load(xmm1, bi, false, true))
+        bind(ass, rlab)
+        loc-save(di, res, true)
+      else :
+        prim-op(di, ai, bi, two-op?, op)
+    defn math-call (addr:Long, args:Seqable<Xmm>) -> Xmm :
+      for (arg in args, param in [xmm0, xmm1]) do :
+        movss(ass, param, arg) when param != arg
+      val saves = to-tuple $ filter(need-to-save?, seq({ TMPS[_] }, values(registers)))
+      for save in saves do : push(ass, save)
+      call(ass, mov(ass, rdx, addr))
+      for save in reverse(to-list(saves)) do : pop(ass, save)
+      xmm0
+    defn math-call (di:Int, addr:Long, args:Tuple<Int>) -> Xmm :
+      val xmm-args = for (arg in args, dst in [xmm0, xmm1]) seq : loc-load(dst, arg, true, true)
+      math-call(addr, xmm-args)
+      loc-save(di, xmm0, true)
+    val rmoves = to-seq $ moves
+    defn do-moves (tick:Int) :
+      let loop () :
+        if not empty?(rmoves) :
+          val move = peek(rmoves)
+          if t(move) == tick :
+            next(rmoves)
+            println(move) when DEBUG?
+            match(action(move)) :
+              (a:SPILL) :
+                remove(registers, location(move))
+                loc-save(location(move), TMPS[reg(move)], false) when USE-REGISTERS?
+              (a:LOAD) :
+                loc-load(TMPS[reg(move)], location(move), true, false) when USE-REGISTERS?
+                registers[location(move)] = reg(move)
+              (a:ALLOC) :
+                registers[location(move)] = reg(move)
+            loop()
+
+    for (inst in insts, tick in 0 to false) do :
+      do-moves(tick)
+      ; println(inst) when DEBUG?
+      defn print-reg (d:Gp, x:Xmm) -> Gp :
+        movss(ass, d, x)
+        shl(ass, d, 32)
+        shr(ass, d, 32)
+        d
+      defn print-loc (d:Gp, i:Int) -> Gp :
+        print-reg(d, loc-load(xmm0, i, false, false))
+      match(inst) :
+        (i:LoadOp) :
+          val xxx = mov(ass, rax, bits(a(i)))
+          val acc = loc-access(d(i), true, false)
+          val reg =
+            match(acc) :
+              (acc:MemPtr) : (movss(ass, acc, mov(ass, xmm2, xxx)), xmm2)
+              (acc:Xmm) :    (mov(ass, acc, xxx), acc)
+            dump(ass, "%d: LOAD %p\n" [tick, print-reg(rax, reg)]) when TRACE?
+        (i:MoveOp) :
+          val res = loc-load(xmm0, a(i), true, true)
+          loc-save(d(i), res, true)
+          dump(ass, "%d: MOVE %p\n" [tick, print-reg(rax, res)]) when TRACE?
+        (i:LogOp) :
+          val reg = math-call(d(i), logf-addr(), [a(i)])
+          dump(ass, "%d: %p = LOG(%p)\n", [tick, print-reg(rax, reg), print-loc(rbx, a(i))]) when TRACE?
+        (i:AcosOp) :
+          val reg = math-call(d(i), acosf-addr(), [a(i)])
+          dump(ass, "%d: %p = ACOS(%p)\n", [tick, print-reg(rax, reg), print-loc(rbx, a(i))]) when TRACE?
+        (i:SinOp) :
+          val reg = math-call(d(i), sinf-addr(), [a(i)])
+          dump(ass, "%d: %p = SIN(%p)\n", [tick, print-reg(rax, reg), print-loc(rbx, a(i))]) when TRACE?
+        (i:CosOp) :
+          val reg = math-call(d(i), cosf-addr(), [a(i)])
+          dump(ass, "%d: %p = COS(%p)\n", [tick, print-reg(rax, reg), print-loc(rbx, a(i))]) when TRACE?
+        (i:Atan2Op) :
+          val reg = math-call(d(i), atan2f-addr(), [a(i), b(i)])
+          dump(ass, "%d: %p = ATAN2(%p)\n", [tick, print-reg(rax, reg), print-loc(rbx, a(i)), print-loc(rcx, b(i))]) when TRACE?
+        (i:AddOp) :
+          val res = prim-op(d(i), a(i), b(i), true, addss)
+          dump(ass, "%d: %p = ADD(%p, %p)\n" [tick, print-reg(rax, res), print-loc(rbx, a(i)), print-loc(rcx, b(i))]) when TRACE?
+        (i:SubtractOp) :
+          val res = prim-op(d(i), a(i), b(i), true, subss)
+          dump(ass, "%d: %p = SUB(%p, %p)\n" [tick, print-reg(rax, res), print-loc(rbx, a(i)), print-loc(rcx, b(i))]) when TRACE?
+        (i:MultiplyOp) :
+          val res = prim-op(d(i), a(i), b(i), true, mulss)
+          dump(ass, "%d: %p = MUL(%p, %p)\n" [tick, print-reg(rax, res), print-loc(rbx, a(i)), print-loc(rcx, b(i))]) when TRACE?
+        (i:DivideOp) :
+          val res = cond-op(d(i), a(i), b(i), b(i), true, divss)
+          dump(ass, "%d: %p = DIV(%p, %p)\n" [tick, print-reg(rax, res), print-loc(rbx, a(i)), print-loc(rcx, b(i))]) when TRACE?
+        (i:PowerOp) :
+          val res = cond-op(d(i), a(i), b(i), a(i), false, fn (a, a1, a2) : math-call(powf-addr(), [a1, a2]))
+          dump(ass, "%d: %p = POW(%p, %p)\n" [tick, print-reg(rax, res), print-loc(rbx, a(i)), print-loc(rcx, b(i))]) when TRACE?
+        (i:PrintOp) :
+          ; (val x = dat[a(i)], dat[d(i)] = x, println("%_: %_" % [id(i), x]))
+          false
+
+    println("WRITEBACK MOVES") when DEBUG?
+    
+    do-moves(length(insts))
+
+    println("%_ SPILLS %_ LOADS %_ READS %_ WRITES %_%% REG ACCESSES" %
+      [num-spills, num-loads, num-reads, num-writes, 100.0f * to-float(num-register-accesses) / to-float(num-accesses)]) ; when DEBUG?
+    stop(jit-timer)
+    println(jit-timer)
+    ret(ass)
+
+; defn jit-old (insts:Tuple<Inst>, sym-tab:HashTable<Symbol, SymVar>,
+;               rt:JitRuntime, disassembling?:True|False, jit-log-file:FileOutputStream) -> Func :
+;   val ints = to-tuple $ find-intervals(insts)
+;   ; for i in ints do : println(i) when DEBUG?
+;   val dx-offs = to-intset $ for v in values(sym-tab) seq : dx-off(v)
+;   val moves = to-tuple(mdu-reg-moves(insts, ints, 16, dx-offs) when MDU? else reg-moves(ints, 16, dx-offs))
+;   println("---") when DEBUG?
+;   for move in moves do :
+;     println(move) when DEBUG?
+;   println("---") when DEBUG?
+;   val registers = IntTable<Int>()
+;   val num-spills = count({ action(_) is SPILL }, moves)
+;   val num-loads = count({ action(_) is LOAD }, moves)
+;   var num-accesses:Int = 0
+;   var num-register-accesses:Int = 0
+;   within (code, ass) = gen-code(rt, show-code-size?, disassembling?, jit-log-file) :
+;     val dat = r10
+;     mov(ass, dat, c-params[0])
+;     defn access (i:Int) -> MemPtr :
+;       ; println("ACCESS %_ %_ REGISTERS %_" % [i, key?(registers, i), to-tuple $ registers]) when DEBUG?
+;       if key?(registers, i) :
+;         num-register-accesses = num-register-accesses + 1
+;       num-accesses = num-accesses + 1
+;       MemPtr(dat, i * SIZEOF-INT, SIZEOF-INT)
+;     defn prim-op (di:Int, a1i:Int, a2i:Int, op:(Assembler, Xmm, Xmm) -> Xmm) :
+;       val a = movss(ass, xmm0, access(a1i))
+;       val b = movss(ass, xmm1, access(a2i))
+;       val res = op(ass, a, b)
+;       movss(ass, access(di), res)
+;     defn cond-op (di:Int, ai:Int, bi:Int, zi?:Int, op:(Assembler, Xmm, Xmm) -> ?) :
+;       if COND-OP? :
+;         val rlab = new-label(ass)
+;         val res = xmm0
+;         val z?  = movss(ass, xmm1, access(zi?))
+;         mov(ass, res, mov(ass, rax, bits(0.0f)))
+;         ucomiss(ass, z?, res)
+;         je(ass, rlab)
+;         op(ass, movss(ass, res, access(ai)), movss(ass, xmm1, access(bi)))
+;         bind(ass, rlab)
+;         movss(ass, access(di), res)
+;       else :
+;         prim-op(di, ai, bi, op)
+;     defn math-call (addr:Long, args:Seqable<Xmm>) :
+;       for (arg in args, param in [xmm0, xmm1]) do :
+;         movss(ass, param, arg) when param != arg
+;       call(ass, mov(ass, rdx, addr))
+;     defn math-call (di:Int, addr:Long, args:Tuple<Int>) :
+;       val xmm-args = for (arg in args, dst in [xmm0, xmm1]) seq : movss(ass, dst, access(arg))
+;       math-call(addr, xmm-args)
+;       movss(ass, access(di), xmm0)
+;     
+;     val rmoves = to-seq $ moves
+;     defn do-moves (tick:Int) :
+;       let loop () :
+;         if not empty?(rmoves) :
+;           val move = peek(rmoves)
+;           if t(move) == tick :
+;             next(rmoves)
+;             println(move) when DEBUG?
+;             match(action(move)) :
+;               (a:SPILL) :
+;                 remove(registers, location(move))
+;               (a:LOAD) :
+;                 registers[location(move)] = reg(move)
+;               (a:ALLOC) :
+;                 registers[location(move)] = reg(move)
+;             loop()
+; 
+;     for (inst in insts, tick in 0 to false) do :
+;       do-moves(tick)
+;       ; println(inst) when DEBUG?
+;       match(inst) :
+;         (i:LoadOp) :
+;           ; dump(ass, "LOAD %p\n", [dat])
+;           mov(ass, access(d(i)), mov(ass, rax, bits(a(i))))
+;         (i:LogOp) :
+;           ; dump(ass, "LOG %p\n", [dat])
+;           math-call(d(i), logf-addr(), [a(i)])
+;         (i:AcosOp) :
+;           ; dump(ass, "ACOS %p\n", [dat])
+;           math-call(d(i), acosf-addr(), [a(i)])
+;         (i:SinOp) :
+;           ; dump(ass, "SIN %p\n", [dat])
+;           math-call(d(i), sinf-addr(), [a(i)])
+;         (i:CosOp) :
+;           ; dump(ass, "COS %p\n", [dat])
+;           math-call(d(i), cosf-addr(), [a(i)])
+;         (i:Atan2Op) :
+;           ; dump(ass, "ATAN2 %p\n", [dat])
+;           math-call(d(i), atan2f-addr(), [a(i), b(i)])
+;         (i:AddOp) :
+;           ; dump(ass, "ADD %p\n", [dat])
+;           prim-op(d(i), a(i), b(i), addss)
+;         (i:SubtractOp) :
+;           ; dump(ass, "SUB %p\n", [dat])
+;           prim-op(d(i), a(i), b(i), subss)
+;         (i:MultiplyOp) :
+;           ; dump(ass, "MUL %p\n", [dat])
+;           prim-op(d(i), a(i), b(i), mulss)
+;         (i:DivideOp) :
+;           ; dump(ass, "DIV %p\n", [dat])
+;           cond-op(d(i), a(i), b(i), b(i), divss)
+;         (i:PowerOp) :
+;           ; dump(ass, "POW %p\n", [dat])
+;           cond-op(d(i), a(i), b(i), a(i), fn (a, a1, a2) : math-call(powf-addr(), [a1, a2]))
+;         (i:PrintOp) :
+;           ; (val x = dat[a(i)], dat[d(i)] = x, println("%_: %_" % [id(i), x]))
+;           false
+; 
+;     println("WRITEBACK MOVES") when DEBUG?
+;     
+;     do-moves(length(insts))
+; 
+;     println("%_ SPILLS %_ LOADS %_ READS %_%% REG ACCESSES" %
+;       [num-spills, num-loads, num-accesses - num-register-accesses, 100.0f * to-float(num-register-accesses) / to-float(num-accesses)]) ; when DEBUG?
+;     ret(ass)
+
+public defn run (inst:Inst, m:Machine) :
+  val dat = data(m)
+  match(inst) :
+    (i:LoadOp) :
+      dat[d(i)] = a(i)
+      ; println("%_ load(%_) -> %_" % [i, a(i), dat[d(i)]])
+    (i:MoveOp) :
+      dat[d(i)] = dat[a(i)]
+      ; println("%_ load(%_) -> %_" % [i, a(i), dat[d(i)]])
+    (i:LogOp) :
+      dat[d(i)] = log(dat[a(i)])
+      ; println("%_ log(%_) -> %_" % [i, dat[a(i)], dat[d(i)]])
+    (i:AcosOp) :
+      dat[d(i)] = acos(dat[a(i)])
+      ; println("%_ acos(%_) -> %_" % [i, dat[a(i)], dat[d(i)]])
+    (i:SinOp) :
+      dat[d(i)] = sin(dat[a(i)])
+      ; println("%_ sin(%_) -> %_" % [i, dat[a(i)], dat[d(i)]])
+    (i:CosOp) :
+      dat[d(i)] = cos(dat[a(i)])
+      ; println("%_ cos(%_) -> %_" % [i, dat[a(i)], dat[d(i)]])
+    (i:Atan2Op) :
+      dat[d(i)] = atan2(dat[a(i)], dat[b(i)])
+      ; println("%_ atan2(%_, %_) -> %_" % [i, dat[a(i)], dat[b(i)], dat[d(i)]])
+    (i:AddOp) :
+      dat[d(i)] = dat[a(i)] + dat[b(i)]
+      ; println("%_ %_ + %_ -> %_" % [i, dat[a(i)], dat[b(i)], dat[d(i)]])
+    (i:SubtractOp) :
+      dat[d(i)] = dat[a(i)] - dat[b(i)]
+      ; println("%_ %_ - %_ -> %_" % [i, dat[a(i)], dat[b(i)], dat[d(i)]])
+    (i:MultiplyOp) :
+      dat[d(i)] = dat[a(i)] * dat[b(i)]
+      ; println("%_ %_ * %_ -> %_" % [i, dat[a(i)], dat[b(i)], dat[d(i)]])
+    (i:DivideOp) :
+      ; dat[d(i)] = dat[a(i)] / dat[b(i)]
+      dat[d(i)] = 0.0f when (dat[b(i)] == 0.0f) else (dat[a(i)] / dat[b(i)])
+      ; println("%_ %_ / %_ -> %_" % [i, dat[a(i)], dat[b(i)], dat[d(i)]])
+    (i:PowerOp) :
+      dat[d(i)] = 0.0f when (dat[a(i)] == 0.0f) else pow(dat[a(i)], dat[b(i)])
+      ; dat[d(i)] = pow(dat[a(i)], dat[b(i)])
+      ; println("%_ %_ ^ %_ -> %_" % [i, dat[a(i)], dat[b(i)], dat[d(i)]])
+    (i:PrintOp) : (val x = dat[a(i)], dat[d(i)] = x, println("%_: %_" % [id(i), x]))
+
+lostanza defn launch (func:ref<Func>, far:ref<FloatArray>) -> ref<False> :
+  call(func, addr!(far.data))
+  return false
+
+public var run-timer:Timer = MicrosecondTimer("RUNNING")
+
+public defn run (m:Machine) -> FloatArray :
+  start(run-timer) when TIME?
+  match(func(m)) :
+    (func:Func) :
+      launch(func, data(m))
+    (func:False) :
+      for inst in insts(m) do : run(inst, m)
+  stop(run-timer) when TIME?
+  println(run-timer) when TIME?
+  data(m)
+
+public defn compile (b:Body, rt:JitRuntime) :
+  ; println(b)
+  for c in costs(b) do :
+    val sexp0 = value(c)
+    val sexp = collect-vars(sexp0)
+    ; println(sexp0)
+    println("COLLECTED VARS")
+    val deduper = Deduper()
+    println("COMPILING COST")
+    val compiler-timer = MillisecondTimer("COMPILING")
+    start(compiler-timer)
+    val cost-var = compile(deduper,sexp)
+    for (sym in symvars(b), off in 1 to false) do :
+      set-x-off(sym, (- off))
+      ; println("INIT X-OFF %_ = %_" % [id(sym), (- off)])
+    val symvar-patches = IntTable<Int>()
+    ; println("COST LEN %_" % [length(instructions(deduper))])
+    ; println(simplify(sexp, 0))
+    set-cost-off(c, offset(cost-var, symtab(b)))
+    stop(compiler-timer)
+    println(compiler-timer)
+    ; for (e in ddsexps, i in 0 to false) do :
+    ;   println("%_: %_" % [i, e])
+    val derivative-timer = MillisecondTimer("DERIVATIVES")
+    val differentiate-timer = MillisecondTimer("DIFFERENTIATE")
+    val dedup-timer = MillisecondTimer("DEDUP")
+    val pre-num-equals = num-equals
+    val pre-num-hashes = num-hashes
+    start(derivative-timer)
+    val de-offs = to-tuple $ for v in symvars(b) seq :
+      if dx-update?(v) :
+        start(differentiate-timer)
+        val de = differentiate(sexp, id(v))
+        stop(differentiate-timer)
+        set-e(v, de)
+        start(dedup-timer)
+        val de-var = compile(deduper, e(v))
+        stop(dedup-timer)
+        ; println("DE %_ VAR %_ EXP %_" % [id(v), name(de-var), e(v)])
+        ; println("DE %_ VAR %_" % [id(v), name(de-var)])
+        set-dx-off(v, offset(de-var, symtab(b)))
+        ; println("V %_ VAR %_ LEN %_ OFF %_" % [id(v), de-var, length(instructions(deduper)), dx-off(v)])
+        ; println(simplify(e(v), 0))
+        ; val de = dedup(e(v))
+        ; for (e in de, i in 0 to false) do :
+        ;   println("%_: %_" % [i, e])
+        ; println("V %_ E = %_" % [id(v), e(v)])
+        dx-off(v)
+      else :
+        0
+    for v in expvars(b) do :
+      val e-var = compile(deduper, e(v))
+      val off = offset(e-var, symtab(b))
+      ; println("DE %_ VAR %_ EXP %_ OFF %_" % [id(v), name(e-var), e(v), off])
+      set-x-off(v, off)
+    stop(derivative-timer)
+    println(derivative-timer)
+    println(differentiate-timer)
+    println(dedup-timer)
+    println("NUM-HASHES %_ NUM-EQUALS %_" % [num-hashes - pre-num-hashes, num-equals - pre-num-equals])
+    val exps = instructions(deduper)
+    ; for (e in exps, i in 0 to false) do :
+    ;   println("%_: %_" % [i, e])
+    ; println("COST-OFF %_" % [cost-off(b)])
+    ; for (off in de-offs, i in 0 to false) do :
+    ;   println("DE-OFF-%_ %_" % [i, off])
+    for (sym in symvars(b), off in length(exps) to false) do :
+      symvar-patches[x-off(sym)] = off
+      set-x-off(sym, off)
+    for v in expvars(b) do :
+      if x-off(v) < 0 :
+        set-x-off(v, symvar-patches[x-off(v)])
+    ; patch dx-offs 
+    ; println("BASE %_" % [length(exps)])
+    for sym in symvars(b) do :
+      val prev-dx-off = dx-off(sym)
+      if dx-off(sym) < 0 :
+        set-dx-off(sym, length(exps) - (dx-off(sym) + 1))
+        ; println("DX-OFF %_ (WAS %_) = %_" % [id(sym), prev-dx-off, dx-off(sym)])
+    ; println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(symtab(b))])
+    if length(symtab(b)) != length(symvars(b)) :
+      println("LEN VARS %_ LEN TAB %_" % [length(symvars(b)), length(symtab(b))])
+      for v in symvars(b) do :
+        println(id(v))
+      val tab = HashTable<Symbol,SymVar>()
+      for v in symvars(b) do :
+        if key?(tab, id(v)) :
+          println("Already have a %_" % [id(v)])
+        else :
+          tab[id(v)] = v
+    ; println("SYMTAB %_" % [to-tuple $ symtab(b)])
+    val machine = compile(exps, b, c, rt)
+    ; for inst in insts(machine) do :
+    ;   println(inst)
+    set-machine(c, machine)
+    ; println(b)
+
+public defstruct EdgeExp :
+  v0 : Vec3Exp
+  v1 : Vec3Exp
+with:
+  printer => true
+
+public defn exp (e:Edge) -> EdgeExp :
+  EdgeExp(exp(v0(e)), exp(v1(e)))
+
+public defn swap (e:EdgeExp) -> EdgeExp :
+  EdgeExp(v1(e), v0(e))
+
+public defn dir (e:EdgeExp) -> Vec3Exp :
+  v1(e) - v0(e)
+
+public defn dot (v0:Vec3Exp, v1:Vec3Exp) -> Exp :
+  x(v0) * x(v1) + y(v0) * y(v1) + z(v0) * z(v1)
+
+public defn modulo (a:Vec3Exp, b:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(y(a) * z(b) - z(a) * y(b),
+          z(a) * x(b) - x(a) * z(b),
+          x(a) * y(b) - y(a) * x(b))
+
+public defn plus (v0:Vec3Exp, v1:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(x(v0) + x(v1), y(v0) + y(v1), z(v0) + z(v1))
+
+public defn minus (v0:Vec3Exp, v1:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(x(v0) - x(v1), y(v0) - y(v1), z(v0) - z(v1))
+
+public defn times (v0:Exp, v1:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(v0 * x(v1), v0 * y(v1), v0 * z(v1))
+
+public defn times (v0:Vec3Exp, v1:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(x(v0) * x(v1), y(v0) * y(v1), z(v0) * z(v1))
+
+public defn divide (v0:Vec3Exp, v1:Exp) -> Vec3Exp :
+  Vec3Exp(x(v0) / v1, y(v0) / v1, z(v0) / v1)
+
+public defn magnitude2 (v:Vec3Exp) -> Exp :
+  dot(v, v)
+
+public defn magnitude (v:Vec3Exp) -> Exp :
+  magnitude2(v) ^ Const(0.5f)
+
+public defn distance2 (a:Vec3Exp, b:Vec3Exp) -> Exp :
+  magnitude2(a - b)
+
+public defn distance (a:Vec3Exp, b:Vec3Exp) -> Exp :
+  magnitude(a - b)
+
+public defn mag (e:EdgeExp) -> Exp :
+  magnitude(dir(e))
+
+public defn sum (xs:Seqable<Exp>) -> Exp : reduce(plus, Const(0.0f), xs)
+
+public defn sqerr (e:Exp) -> Exp :
+  e ^ Const(2.0f)
+
+public defn EdgeLengthConstraint (e:EdgeExp, desired:Exp) -> Exp :
+  sqerr(desired - mag(e))
+
+public defn norm-dot (a:Vec3Exp, b:Vec3Exp) -> Exp :
+  dot(a, b) / (magnitude(a) * magnitude(b))
+
+public defn angle (a:Vec3Exp, b:Vec3Exp) -> Exp :
+  ; acos(norm-dot(a, b))
+  atan2(magnitude(a % b), dot(a, b))
+
+public defn normalize (v:Vec3Exp) -> Vec3Exp :
+  v / magnitude(v)
+
+public defn Print (id:Int, v:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(Print(id, x(v)), Print(id + 1, y(v)), Print(id + 2, z(v)))
+
+public defn ParallelConstraint (a:Vec3Exp, b:Vec3Exp) -> Exp :
+  ; sqerr(angle(a, b))
+  Const(10.0f) * (Const(-1.0f) * sqerr(norm-dot(a, b)) + Const(1.0f))
+
+public defn ParallelConstraint (e0:EdgeExp, e1:EdgeExp) -> Exp :
+  ParallelConstraint(v1(e0) - v0(e0), v1(e1) - v0(e1))
+
+public defn OrthogonalConstraint (a:Vec3Exp, b:Vec3Exp) -> Exp :
+  Const(10.0f) * sqerr(norm-dot(a, b))
+  ; sqerr(angle(a, b) - Const(PI-F / 2.0f))
+
+public defn OrthogonalConstraint (e0:EdgeExp, e1:EdgeExp) -> Exp :
+  OrthogonalConstraint(v1(e0) - v0(e0), v1(e1) - v0(e1))
+
+public defn EdgeAngleConstraint (given:Vec3Exp, desired:Vec3Exp, desired-angle:Exp) -> Exp :
+  sqerr(desired-angle - angle(given, desired))
+
+public defn EdgeAngleConstraint (v0:Vec3Exp, v1:Vec3Exp, desired:Vec3Exp) -> Exp :
+  ; sqerr(desired - Print(0, angle(Print(1, exp(v0) - exp(v1)), Const(x3f(1.0f)))))
+  ; sqerr(Const(-1.0f) * Print(0, angle(Print(1, exp(v0) - exp(v1)), Print(4, desired))))
+  ; sqerr(Const(PI-F / 2.0f) - angle(exp(v0) - exp(v1), desired))
+  ; sqerr(angle(exp(v0) - exp(v1), desired))
+  ; sqerr(Print(0, angle(exp(v0) - exp(v1), desired)))
+  ; ParallelConstraint(exp(v0) - exp(v1), desired)
+  ; sqerr(norm-dot(exp(v0) - exp(v1), desired))
+  EdgeAngleConstraint(v0 - v1, desired, Const(0.0f))
+
+public defn EdgeAngleConstraint (e:EdgeExp, desired:Vec3Exp) -> Exp :
+  EdgeAngleConstraint(v0(e), v1(e), desired)
+
+public defn EdgeEdgeAngleConstraint (v0:Vec3Exp, v1:Vec3Exp, v2:Vec3Exp, desired:Exp) -> Exp :
+  EdgeAngleConstraint(v0 - v1, v2 - v1, desired)
+
+public defn EdgeEdgeAngleConstraint (a0:Vec3Exp, a1:Vec3Exp, b0:Vec3Exp, b1:Vec3Exp, desired:Exp) -> Exp :
+  EdgeAngleConstraint(a1 - a0, b1 - b0, desired)
+
+public defn EdgeEdgeAngleConstraint (e0:EdgeExp, e1:EdgeExp, desired:Exp) -> Exp :
+  EdgeEdgeAngleConstraint(v0(e0), v1(e0), v0(e1), v1(e1), desired)
+
+public defn AngleConstraint (a:Angle, desired:Exp) -> Exp :
+  EdgeEdgeAngleConstraint(exp(a0(a)), exp(a1(a)), exp(b0(a)), exp(b1(a)), desired)
+
+public defn SameConstraint (a:Exp, b:Exp) -> Exp :
+  sqerr(a - b)
+
+public defn SameConstraint (a:Vec3Exp, b:Vec3Exp) -> Exp :
+  SameVecConstraint $ [a, b]
+
+public defn VerticalConstraint (v0:Vec3Exp, v1:Vec3Exp) -> Exp :
+  SameConstraint(x(v1), x(v0))
+
+public defn VerticalConstraint (e:EdgeExp) -> Exp :
+  VerticalConstraint(v0(e), v1(e))
+
+public defn HorizontalConstraint (v0:Vec3Exp, v1:Vec3Exp) -> Exp :
+  SameConstraint(y(v1), y(v0))
+
+public defn HorizontalConstraint (e:EdgeExp) -> Exp :
+  HorizontalConstraint(v0(e), v1(e))
+
+public defn MidPointConstraint (vecs:Tuple<Vec3Exp>, mid:Vec3Exp) -> Exp :
+  val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
+  sqerr(magnitude(ctr - mid))
+  
+public defn CenterXConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
+  val ctr = reduce(fn (a:Exp, b:Exp) : a + b, seq(x, vecs)) / Const(to-float(length(vecs)))
+  sqerr(x(desired) - ctr)
+  
+public defn CenterXYConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
+  val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
+  sqerr(magnitude(xy(ctr - desired)))
+  
+public defn CenterXZConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
+  val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
+  sqerr(magnitude(xz(ctr - desired)))
+  
+public defn CenterConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
+  val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
+  sqerr(magnitude(ctr - desired))
+  
+public defn SameVecConstraint (vecs:Tuple<Vec3Exp>) -> Exp :
+  val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
+  sum $ for vec in vecs seq : sqerr(magnitude(ctr - vec))
+
+; TODO: GENERALIZE
+public defn OnLineConstraint (p:Vec3Exp, a:Vec3Exp, b:Vec3Exp, d:Exp) -> Exp :
+  val n = b - a
+  sqerr(magnitude((a - p) % n) / magnitude(n) - d)
+  
+public defn OnLineConstraint (p:Vec3Exp, e:EdgeExp, d:Exp) -> Exp :
+  OnLineConstraint(p, v0(e), v1(e), d)
+
+public defn OnLineConstraint (a:EdgeExp, b:EdgeExp, d:Exp) -> Exp :
+  OnLineConstraint(v0(a), b, d) + OnLineConstraint(v1(a), b, d)
+
+public defn SameVertexConstraint (vertices:Tuple<Vertex>) -> Exp :
+  SameVecConstraint(to-tuple $ seq(exp, vertices))
+
+public defn SameEdgeConstraint (edges:Tuple<EdgeExp>) -> Exp :
+  SameVecConstraint(to-tuple $ seq(v0, edges)) + SameVecConstraint(to-tuple $ seq(v1, edges))
+
+public defn EqualLengthConstraint (edges:Tuple<EdgeExp>) -> Exp :
+  val desired = sum(for e in edges seq : mag(e)) / Const(to-float(length(edges)))
+  sum(seq(EdgeLengthConstraint{_, desired}, edges))
+
+public defn rot90 (v:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(Const(-1.0f) * y(v), x(v), z(v))
+
+public defn SameSideConstraint (e:EdgeExp, p0:Vec3Exp, p1:Vec3Exp) -> Exp :
+  val normal = normalize(rot90(v1(e) - v0(e)))
+  dot(normal, p0 - v0(e)) * dot(normal, p1 - v0(e))
+
+public defn softmax (a:Exp, b:Exp) -> [Exp, Exp] :
+  val [ea, eb] = [exp(a), exp(b)]
+  val sum = ea + eb
+  [ea / sum, eb / sum]
+
+public defn max (a:Exp, b:Exp) -> Exp :
+  val [pa, pb] = softmax(a, b)
+  pa * a + pb * b
+
+public defn min (a:Exp, b:Exp) -> Exp :
+  val [pa, pb] = softmax(a, b)
+  (Const(1.0f) - pa) * a + (Const(1.0f) - pb) * b
+
+public defn max (a:Vec3Exp, b:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(max(x(a), x(b)), max(y(a), y(b)), max(z(a), z(b)))
+
+public defn min (a:Vec3Exp, b:Vec3Exp) -> Vec3Exp :
+  Vec3Exp(min(x(a), x(b)), min(y(a), y(b)), min(z(a), z(b)))
+
+public defstruct BindBody <: Module :
+  id : Symbol with: (as-method => true)
+  ; bind-vars : Tuple<AnyVar> ; with: (as-method => true)
+  vars : Tuple<AnyVar> with: (as-method => true)
+  mod : Module
+  entities : Tuple<Entity> with: (as-method => true)
+  cost : Exp with: (as-method => true)
+
+public defn pulse (x:Exp, s:Exp, e:Exp) -> Exp :
+  threshold(x, s) * (Const(1.0f) - threshold(x, e))
+
+public defn threshold (x:Exp, t:Exp) -> Exp :
+  sigmoid(x - t)
+
+public defn sigmoid (x:Exp) -> Exp :
+  Const(1.0f) / (Const(1.0f) + exp(Const(-1.0f) * x))
+
+public defn theta (period:Float, time:SymVar) -> Exp :
+  Const(2.0f * PI-F / period) * exp(time)
+
+public defn wave (min:Float, max:Float, period:Float, time:SymVar) -> Exp :
+  val r = max - min
+  Const(r / 2.0f) * Sin(theta(period, time)) + Const(min)
+
+public defn radar (radius:Float, period:Float, time:SymVar) -> Vec3Exp :
+  val theta = theta(period, time)
+  Vec3Exp(Const(radius) * cos(theta), Const(radius) * sin(theta), Const(0.0f))
+
+public defn bounce (amplitude:Float, period:Float, time:SymVar) -> Vec3Exp :
+  val theta = theta(period, time)
+  Vec3Exp(Const(0.0f), Const(0.5f * amplitude) * sin(theta), Const(0.0f))
+
+; defn PolyLinePath (name:Symbol, poly:PolyLine3f) -> Vertex :
+;   val stroke = strokes(poly)[0]
+;   defn index (i:Int) : i % length(stroke)
+;   defn elt (i:Int, dim:Int) : (stroke[index(i)])[dim]
+;   defn nm (i:Symbol) : add-suffix(name, i)
+;   Vertex(name, true,
+;          SymVar(nm(`x), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 0))),
+;          SymVar(nm(`y), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 1))),
+;          SymVar(nm(`z), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 2))))
+
+defn interval-bsearch (elts:Tuple<Float>, x:Float) -> Int :
+  let loop (l:Int = 0, r:Int = length(elts) - 1) :
+    if r >= l :
+      val mid = l + (r - l) / 2
+      if elts[mid] == x :
+        mid
+      else if elts[mid] < x :
+        loop(mid + 1, r)
+      else :
+        loop(l, mid - 1)
+    else :
+      max(0, l - 1)
+
+; TODO: ONLY ONE STROKE FOR NOW
+; TODO: REDO POLYLINE3f to have LineString3f as elements
+public defn PolyLinePath (name:Symbol, poly:PolyLine3f, speed:Float) -> Vertex :
+  val stroke = strokes(poly)[0]
+  val segs:Tuple<[V3f,V3f]> = to-tuple $ successive-pairs(stroke)
+  val sums = to-tuple $ cat([0.0f], cumsum $ seq(fn (seg) : distance(seg[0], seg[1]), segs))
+  val tot-len = last(sums)
+  var last-tick:Int = -1
+  var last-pt:V3f = V3f(0.0f, 0.0f, 0.0f)
+  defn pt-of (tick:Int, it:Float) -> V3f :
+    val t = speed * it
+    if tick == last-tick :
+      last-pt
+    else :
+      val dist  = t % tot-len
+      val idx   = interval-bsearch(sums, dist)
+      val seg   = segs[idx]
+      val start = seg[0]
+      val end   = seg[1]
+      val off   = dist - sums[idx]
+      val dir   = normalize(end - start) 
+      val pt    = start + off * dir
+      ; println("TICK %_: T %_ TOT-LEN %_ DIST %_ IDX %_ START %_ END %_ OFF %_ DIR %_ PT %_" %
+      ;   [ tick, t, tot-len, dist, idx, start, end, off, dir, pt])
+      last-tick = tick
+      last-pt   = pt
+      pt
+  defn elt (tick:Int, t:Float, dim:Int) : pt-of(tick, t)[dim]
+  defn nm (i:Symbol) : add-suffix(name, i)
+  Vertex(name, true,
+         SymVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
+         SymVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1))),
+         SymVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
+
+public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
+  defn rnd-vec (a:Float) : rnd(dims-to-box $ xyz(a))
+  var acceleration:V3f = rnd-vec(1.0f)
+  var axis:V3f = x3f(1.0f)
+  var velocity:V3f = 10.0f * normalize(rnd-vec(1.0f))
+  var position:V3f = V3f(0.0f, radius, 0.0f)
+  var last-tick:Int = -1
+  var last-position:V3f = V3f(0.0f, 0.0f, 0.0f)
+  ; println("VELOCITY %_" % [velocity])
+  defn apply-force (f:V3f) :
+    acceleration = acceleration + f
+  defn pt-of (tick:Int, it:Float) -> V3f :
+    ; val t = speed * it
+    if tick == last-tick :
+      last-position
+    else :
+      ; val force = 10.0f * normalize(normalize(rnd-vec(1.0f)) % position)
+      ; apply-force(rnd-vec(0.5f))
+      ; apply-force(force)
+      ; velocity = 0.9f * velocity + 0.1f * (velocity + acceleration)
+      ; velocity = 0.9f * velocity + 0.1f * (velocity + acceleration)
+      axis = normalize(axis + rnd-vec(0.1f))
+      velocity = normalize(position) % axis
+      position = position + velocity
+      ; print("POS %_" % [position])
+      position = radius * normalize(position)
+      ; println(" NORM POS %_" % [ position])
+      last-tick = tick
+      last-position = position
+      ; acceleration = V3f(0.0f, 0.0f, 0.0f)
+      position
+  defn elt (tick:Int, t:Float, dim:Int) : pt-of(tick, t)[dim]
+  defn nm (i:Symbol) : add-suffix(name, i)
+  Vertex(name, true,
+         SymVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
+         SymVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1) + off-y)),
+         SymVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
+
+public defn BindBody<?T> (name:Symbol, mod:?T&Module, constraints:Seqable<Exp>, new-vars:Tuple<AnyVar>, etc-entities:Seqable<Entity>) :
+  BindBody(name,
+    new-vars,
+    mod,
+    to-tuple $ cat-all $ [new-vars, [ mod ], etc-entities],
+    sum $ constraints)
+
+public defn BindBody<?T> (name:Symbol, mod:?T&Module,
+                          constraints:T -> Seqable<Exp>, 
+                          bindings:T -> Seqable< KeyValue<AnyVar|Vertex, Exp|Vec3Exp> >, new-vars:Tuple<AnyVar>) :
+  val binding-constraints = for b in bindings(mod) seq-cat :
+    for (v in vars(key(b)), e in exps(value(b))) seq : SameConstraint(exp(v), e)
+  BindBody(name, mod, cat(constraints(mod), binding-constraints), new-vars, [])
+
+public defn BindBody<?T> (name:Symbol, mod:?T&Module,
+                          bindings:T -> Seqable< KeyValue<AnyVar|Vertex, Exp|Vec3Exp> >, new-vars:Tuple<AnyVar>) :
+  BindBody(name, mod, { [] }, bindings, new-vars)
+
+
+#for (Prim in [Float Float]
+      Vec in [V2f V3f]
+      Stroke in [Stroke2f Stroke3f]
+      LineSegment in [LineSegment2f LineSegment3f]
+      Box in [Box2f Box3f]
+      neg-inf-box in [neg-inf-box2f neg-inf-box3f]
+      StrokeName in ["Stroke2f" "Stroke3f"]) :
+
+  public defstruct Stroke <: AnyShape&Equalable :
+    state: AnyShapeState with: (as-method => true)
+    points: Tuple<Vec>
+
+  public defn Stroke (points:Seqable<Vec>) :
+    Stroke(default-anyshape-state(), to-tuple $ points)
+
+  defmethod equal? (a:Stroke, b:Stroke) -> True|False :
+    points(a) == points(b)
+
+  defmethod xyz (mat:Mat44f, s:Stroke) -> Stroke :
+    Stroke(state(s), for v in points(s) map : mat * v)
+
+  defmethod print (o:OutputStream, c:Stroke) :
+    print(o, "%_(%_)" % [StrokeName points(c)])
+
+  public defn cat (s1:Stroke, s2:Stroke) -> Stroke :
+    Stroke(cat(points(s1), points(s2)))
+
+  defmethod bounds (p:Stroke) -> Box3f :
+    xyz(reduce(union, neg-inf-box(), seq(Box, points(p))))
+
+  public defn segments (s:Stroke) -> Seq<LineSegment> :
+    val pts = points(s)
+    for i in 0 to (length(pts) - 1) seq :
+      LineSegment(pts[i], pts[i + 1])
+
+public defn to-stroke3f (s:Stroke2f) -> Stroke3f :
+  Stroke3f(state(s), for v in points(s) map: xyz(v))
+
+public defn to-polyline3f (s:Stroke3f) -> PolyLine3f :
+  PolyLine3f(state(s), [points(s)])
+
+public defstruct Arc :
+  center : V2f
+  radius : Float
+  angle : Float       ; degrees
+  start-angle : Float ; degrees
+
+public defn sample (arc:Arc, delta:Float) -> Stroke2f :
+  val r = radius(arc)
+  val n = round(angle(arc) / delta)
+  val inc = angle(arc) / n
+  Stroke2f $ for i in 0 to (to-int(n) + 1) seq :
+    val a = degrees-to-radians(start-angle(arc) + to-float(i) * inc)
+    center(arc) + V2f(r * cos(a), r * sin(a))
+
+public defn double-you (radius:Float) -> Stroke2f :
+  val you1 = sample(Arc(xy(0.0f), radius, 180.0f, 0.0f), 15.0f)
+  cat(you1, reflect-x $ you1)
+
+public defn repeat-first-point (pts:Tuple<V3f>) -> Tuple<V3f> :
+  to-tuple $ cat(pts, [pts[0]])
+
+public val square-path = PolyLine3f $ [ repeat-first-point $ [
+  V3f(1.0f, 1.0f, 0.0f),   V3f(-1.0f, 1.0f, 0.0f), V3f(-1.0f, -1.0f, 0.0f), V3f(1.0f, -1.0f, 0.0f)]]
+
+public val cube-path = PolyLine3f $ [ repeat-first-point $ [
+  V3f(1.0f, 1.0f, -1.0f), V3f(-1.0f, 1.0f, 1.0f), V3f(-1.0f, -1.0f, -1.0f), V3f(1.0f, -1.0f, 1.0f)]]
+
+public val square-you = PolyLine3f $ [ repeat-first-point $ [
+    V3f(-1.0f, 1.0f, 0.0f), V3f(-1.0f, -1.0f, 0.0f), V3f(1.0f, -1.0f, 0.0f), V3f(1.0f, 1.0f, 0.0f)
+    V3f(1.0f, -1.0f, 0.0f), V3f(-1.0f, -1.0f, 0.0f) ]]
+
+public val round-you = to-polyline3f $ to-stroke3f $ reflect-y $ double-you(1.0f)
+public val circle-line = to-polyline3f $ to-stroke3f $ sample(Arc(xy(0.0f), 1.0f, 360.0f, 0.0f), 15.0f)
+
+public defn PolyLinePath2 (name:Symbol) -> Vertex :
+  Vertex(name, true, SymVar(`x, 0.0f) SymVar(`y, 0.0f) SymVar(`z, 0.0f))
+
+public defn lookup-polyhedron (name:String, len:Float) -> Polyhedron :
+  val poly = switch(name) :
+    "tet" : tet-mesh
+    "cube" : cube-mesh
+    "rhombic" : fab-rhombic-dodecahedron()
+    "dodecahedron" : fab-dodecahedron()
+  val e0 = edges(poly)[0]
+  val now-len = distance(vertices(poly)[e0[0]], vertices(poly)[e0[1]])
+  mag(len / now-len, poly)
+
+public defn name (v:Entity) : id(v) ; alternative name
+
+public defstruct LineBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float 
+  rnd-radius : Float with: (default => 1.0f)
+  len : SymVar with: (init => SymVar(`len, init-len))
+  a : Vertex with:   (init => Vertex(`a, V3f(-5.0f, 0.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f))))
+  b : Vertex with:   (init => Vertex(`b, V3f( 5.0f, 0.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f))))
+  ab : Edge with:    (init => Edge(`ab, a, b))
+  entities : Tuple<Entity> with: (as-method => true, init => [len, a, b, ab])
+  cost : Exp with: (as-method => true, init => EdgeLengthConstraint( exp(ab), exp(len)))
+
+public defstruct MultiLineBody <: Module :
+  id : Symbol with: (as-method => true)
+  num-lines : Int
+  rnd-radius : Float with: (default => 1.0f)
+  lines : Tuple<LineBody> with: (init => to-tuple $ for i in 0 to num-lines seq :
+    make-instance(symbol-join $ [`l i], LineBody{_, 7.0f, rnd-radius}))
+  entities : Tuple<Entity> with: (as-method => true, init => lines)
+  cost : Exp with: (as-method => true, init => sum $ 
+    for [p, n] in successive-pairs(lines) seq :
+      Const(4.0f) * SameVertexConstraint( [b(p), a(n)] ))
+
+public defstruct ArmBody <: Module :
+  id : Symbol with: (as-method => true)
+  num-links : Int
+  init-len : Float
+  links : MultiLineBody with: (init => make-instance(`links, MultiLineBody{_, num-links, init-len}))
+  base-angle : SymVar with: (init => SymVar(`base-angle, PI-F / 4.0f))
+  elbow-angles : Tuple<SymVar> with: (init => to-tuple $ for i in 0 to num-links seq :
+    SymVar(symbol-join $ [`elbow-angle i], (1.0f when ((i % 2) == 0) else -1.0f) * PI-F / 4.0f))
+  elbow-angs : Tuple<Angle> with: (init => to-tuple $ for ([p, n] in successive-pairs(lines(links)), i in 1 to false) seq :
+    Angle(symbol-join $ [`elbow-ang i], a(p), b(p), b(n), a(n), true))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat-all $ [[links, base-angle], elbow-angles, elbow-angs])
+  cost : Exp with: (as-method => true, init => sum $ cat-all $ [
+    for (ang in elbow-angs, angle in elbow-angles) seq :
+      AngleConstraint(ang, exp(angle))
+    [ EdgeAngleConstraint(exp(a(lines(links)[0])) - exp(b(lines(links)[0])), Const(x3f(1.0f)), exp(base-angle)) ] ])
+
+public defn tip (a:ArmBody) -> Vertex :
+  b(last(lines(links(a))))
+
+public defn wrist (a:ArmBody) -> LineBody :
+  last(lines(links(a)))
+
+public defn ankle (a:ArmBody) -> LineBody :
+  wrist(a)
+
+public defn base (a:ArmBody) -> LineBody :
+  lines(links(a))[0]
+
+public defn rectangle-corners (dims:V2f, x-dir:V3f, y-dir:V3f) -> [V3f, V3f, V3f, V3f] :
+  ; println("DIMS %_ WDIR %_ HDIR %_" % [dims, x-dir, y-dir])
+  ; defn r () : rndf(-0.2f, 0.2f)
+  defn r () : 0.0f
+  [ (-0.5f + r()) * x(dims) * x-dir + (-0.5f + r()) * y(dims) * y-dir,
+    ( 0.5f + r()) * x(dims) * x-dir + (-0.5f + r()) * y(dims) * y-dir,
+    ( 0.5f + r()) * x(dims) * x-dir + ( 0.5f + r()) * y(dims) * y-dir,
+    (-0.5f + r()) * x(dims) * x-dir + ( 0.5f + r()) * y(dims) * y-dir ]
+
+public defn rectangle-corners (dims:V2f) :
+ rectangle-corners(dims, x3f(1.0f), y3f(1.0f))
+
+public defn rectangle-corners (s:V3f, f:V3f, n:V3f, w:Float) :
+  ; println("S %_ F %_ N %_ W %_" % [s, f, n, w])
+  val y = f - s
+  val ny = normalize(y)
+  val nx = ny % n
+  val [a, b, c, d] = rectangle-corners(V2f(w, magnitude(y) - 2.0f * w), nx, ny)
+  val ctr = (f + s) / 2.0f
+  [ctr + a, ctr + b, ctr + c, ctr + d]
+
+public defn ProjectOntoCircle (v:Vertex, circle:Circle) -> Exp :
+  EdgeLengthConstraint(EdgeExp(exp(center(circle)), exp(v)), exp(radius(circle)))
+

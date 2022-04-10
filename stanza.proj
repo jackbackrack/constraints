@@ -1,0 +1,55 @@
+include "src/stanza.proj"
+
+build pixel-picker :
+  inputs: pixel-picker
+  pkg: "pkgs"
+  o: "build/pixel-picker"
+
+build picker :
+  inputs: picker
+  pkg: "pkgs"
+  o: "build/picker"
+
+build constraints-app :
+  inputs: constraints-app
+  pkg: "pkgs"
+  o: "build/constraints-app"
+
+build constraints-simple-app :
+  inputs: constraints-simple-app
+  pkg: "pkgs"
+  o: "build/constraints-simple-app"
+
+build constraints-dancer-app :
+  inputs: constraints-dancer-app
+  pkg: "pkgs"
+  o: "build/constraints-dancer-app"
+
+build constraints-kinematics-app :
+  inputs: constraints-kinematics-app
+  pkg: "pkgs"
+  o: "build/constraints-kinematics-app"
+
+build constraints-stanza :
+  inputs:
+    stz/driver
+  supported-vm-packages:
+    constraints
+    constraints-viz
+    constraints-app
+  pkg: "pkgs"
+  o: "build/constraints-stanza"
+  optimize
+
+build solvespace-demo :
+  inputs: solvespace-demo
+  pkg: "pkgs"
+  o: "build/solvespace-demo"
+
+build solvespace-stanza :
+  inputs:
+    stz/driver
+  supported-vm-packages: solvespace-demo
+  pkg: "pkgs"
+  o: "build/solvespace-stanza"
+  optimize

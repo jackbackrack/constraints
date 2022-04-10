@@ -1,0 +1,360 @@
+defpackage constraints-viz :
+  import core
+  import math
+  import collections
+  import utils/file-system
+  import utils/rnd
+  import utils/seqable
+  import geom/vec
+  import geom/angle
+  import geom/poseable
+  import geom/polygon
+  import geom/box
+  import geom/gfx
+  import geom/arc-ball
+  import calculus
+  import gui/props
+  import gui/keys
+  import gui/cmds
+  import gui/lay
+  import gui/viz
+  import gfx/gl
+  import gfx/glu
+  import gfx/glfw
+  import gfx/drawing
+  import gfx/font
+  import constraints
+  import stz/asmjit
+
+public deftype ConstraintsModel <: Model
+defmulti value (v:ConstraintsModel) -> Body
+defmulti set-value (v:ConstraintsModel, x:Body) -> False
+
+public defn ConstraintsModel (name:String, body:Body) :
+  val views = Vector<ConstraintsView>()
+  new ConstraintsModel :
+    defmethod name (this) : name
+    defmethod views (this) : views
+    defmethod value (this) : body
+
+public deftype ConstraintsView <: ModelView<ConstraintsModel>
+
+defn my-angle (a:V3f, b:V3f) -> Float :
+  atan2(magnitude(a % b), dot(a, b))
+  ; val ma = magnitude(a)
+  ; val mb = magnitude(b)
+  ; val d = dot(a, b)
+  ; val f = d / (ma * mb)
+  ; val ac = 0.0f when f == 1.0f else acos(f)
+  ; ; println("A %_ B %_ MA %_ MB %_ D %_ F %_ AC %_" % [a, b, ma, mb, d, f, ac])
+  ; ; acos(dot(a, b) / (magnitude(a) * magnitude(b)))
+  ; ac
+
+defn color-of (ref?:True|False) :
+  if ref? :
+    gl-color3f(0.0f, 0.5f, 0.0f)
+  else :
+    gl-color3f(1.0f, 1.0f, 1.0f)
+
+defmethod draw (vertex:Vertex, size:Float) :
+  gl-push-matrix()
+  color-of(ref?(vertex))
+  gl-translate(pos(vertex))
+  gl-begin(GL-POINTS)
+  gl-vertex(V3f(0.0f, 0.0f, 0.0f))
+  gl-end()
+  draw-quad(0.25f, 0.25f)
+  if top-show-velocity? :
+    gl-begin(GL-LINES)
+    gl-vertex(V3f(0.0f, 0.0f, 0.0f))
+    gl-vertex(vel(vertex))
+    ; println("ID %_ VEL %_" % [id(vertex), vel(vertex)])
+    gl-end()
+  if top-show-labels? :
+    gl-color3f(1.0f, 1.0f, 1.0f)
+    draw-text(3.0f * size, 3.0f * size, *font*, to-string $ id(vertex))
+  gl-pop-matrix()
+
+defmethod draw (e:Edge, size:Float) :
+  color-of(ref?(e))
+  gl-begin(GL-LINES)
+  gl-vertex(pos(v0(e)))
+  gl-vertex(pos(v1(e)))
+  gl-end()
+  if measure?(e) and top-show-labels? :
+    gl-push-matrix()
+    val c = (pos(v0(e)) + pos(v1(e))) / 2.0f
+    val d = magnitude(pos(v1(e)) - pos(v0(e)))
+    gl-translate(c)
+    draw-text(3.0f * size, 3.0f * size, *font*, to-string $ d)
+    gl-pop-matrix()
+
+defmethod draw (c:Circle, size:Float) :
+  color-of(ref?(c))
+  gl-push-matrix()
+  gl-translate(pos(center(c)))
+  gl-begin(GL-POINTS)
+  gl-vertex(V3f(0.0f, 0.0f, 0.0f))
+  gl-end()
+  draw-circle(x(radius(c)), 64)
+  gl-pop-matrix()
+
+defmethod draw (p:Plane, size:Float) :
+  color-of(true)
+  gl-push-matrix()
+  gl-translate(pos(center(p)))
+  gl-begin(GL-POINTS)
+  gl-vertex(V3f(0.0f, 0.0f, 0.0f))
+  gl-end()
+  gl-begin(GL-LINES)
+  gl-vertex(V3f(0.0f, 0.0f, 0.0f))
+  gl-vertex(pos(normal(p)))
+  gl-end()
+  gl-pop-matrix()
+
+defmethod draw (a:Angle, size:Float) :
+  if measure?(a) and top-show-labels? :
+    gl-push-matrix()
+    val e0 = normalize(pos(a1(a)) - pos(a0(a)))
+    val e1 = normalize(pos(b1(a)) - pos(b0(a)))
+    val p = 6.0f * size * normalize(e0 + e1)
+    gl-translate(pos(a0(a)) + p)
+    val ang = radians-to-degrees(my-angle(e0, e1))
+    ; println("V0 %_ V1 %_ V2 %_ E0 %_ E1 %_ DOT %_ MAG2 %_ A %_ ANG %_" % [pos(v0(a)), pos(v1(a)), pos(v2(a)), e0, e1, dot(e0, e1), magnitude(e0) * magnitude(e1), my-angle(e0, e1), ang])
+    draw-text(3.0f * size, 3.0f * size, *font*, string-join $ ["A" ang])
+    gl-pop-matrix()
+
+public defn ConstraintsView (iname:String, c:ConstraintsModel, minibuf:StringBuffer, gkeys:Keys, keys:Keys, cmds:Cmds, props:Props, xform:Transformation) :
+  val state = ViewState(iname, [], minibuf, gkeys, keys, cmds, props, xform)
+  val res = new ConstraintsView :
+    defmethod state (this) : state
+    defmethod render (this, w:Float, h:Float) :
+      val sys = value(c)
+      val box = glu-project-dims(V3f(0.95f * w, 0.95f * h, 0.0f))
+      val dms = dims(box)
+      ;; println-all(["BOX = " box " DIMS = " dims])
+      gl-enable(GL-SCISSOR-TEST)
+      gl-scissor(to-int(x(lo(box))), to-int(y(lo(box))), to-int(x(dms)), to-int(y(dms)))
+      val s = min(w, h) * 0.5f
+      gl-push-matrix()
+      gl-scalef(s, s, s)
+      val s2 = 0.1f
+      gl-scalef(s2, s2, s2)
+      ; val tdms = dims(bounds(poly(leds)))
+      ; val ts = 0.8f * 0.5f * min(x(tdms) / w, y(tdms) / h)
+      ; gl-scalef(ts, ts, ts)
+      render-model-begin(xform)
+      if PICKING? :
+        for (vertex in vertices(sys), i in 0 to false) do :
+          gl-push-matrix()
+          gl-color3f(to-float(i + 1) / 256.0f, 0.0f, 0.0f)
+          gl-translate(pos(vertex))
+          draw-quad(0.5f, 0.5f)
+          gl-pop-matrix()
+      else :
+        gl-point-size(6.0f)
+        gl-color3f(1.0f, 1.0f, 1.0f)
+        gl-color3f(1.0f, 1.0f, 1.0f)
+        for e in entities(sys) do :
+          draw(e, vertex-size(sys))
+      render-end(xform)
+      gl-pop-matrix()
+      gl-color3f(1.0f, 1.0f, 1.0f)
+      gl-disable(GL-SCISSOR-TEST)
+    defmethod clone (this) : ConstraintsView(iname, c, minibuf, gkeys, keys, cmds, props, clone(xform))
+  view-init(res)
+  add(views(c), res)
+  res
+
+public deftype ConstraintsViz <: Viz
+public defmulti images (nv:ConstraintsViz) -> Tuple<Tuple<Tuple<Int>>>
+public defmulti body (nv:ConstraintsViz) -> Body
+public defmulti set-body (nv:ConstraintsViz, b:Body)
+public defmulti running? (v:ConstraintsViz) -> True|False
+public defmulti set-running? (v:ConstraintsViz, x:True|False) -> False
+public defmulti step? (v:ConstraintsViz) -> True|False
+public defmulti set-step? (v:ConstraintsViz, x:True|False) -> False
+public defmulti init? (v:ConstraintsViz) -> True|False
+public defmulti set-init? (v:ConstraintsViz, x:True|False) -> False
+public defmulti vars (v:ConstraintsViz) -> Tuple<AnyVar>
+public defmulti time (v:ConstraintsViz) -> SymVar
+
+public defn ConstraintsViz (win:Window, init-body:Body, vars:Tuple<AnyVar>, time:SymVar) :
+  val state = VizState(win)
+  var body = init-body
+  var running? = false
+  var step? = false
+  var init? = false
+  new ConstraintsViz :
+    defmethod state (this) : state
+    defmethod body (this) : body
+    defmethod set-body (this, b:Body) : body = b
+    defmethod running? (this) : running?
+    defmethod set-running? (this, b:True|False) : running? = b
+    defmethod step? (this) : step?
+    defmethod set-step? (this, b:True|False) : step? = b
+    defmethod init? (this) : init?
+    defmethod set-init? (this, b:True|False) : init? = b
+    defmethod vars (this) : vars
+    defmethod time (this) : time
+
+defn run-cmd (v:ConstraintsViz, key:Key, cmds:Cmds) -> Cmd :
+  install $ Cmd("run", { set-running?(v, true) }, key, cmds)
+
+defn pause-cmd (v:ConstraintsViz, key:Key, cmds:Cmds) -> Cmd :
+  install $ Cmd("pause", { set-running?(v, false) }, key, cmds)
+
+defn step-cmd (v:ConstraintsViz, key:Key, cmds:Cmds) -> Cmd :
+  install $ Cmd("step", { (set-running?(v, false) set-step?(v, true)) }, key, cmds)
+
+public val key-1 = SymVar(`key-1, 0.0f, false, false)
+
+defn toggle-1-cmd (v:ConstraintsViz, key:Key, cmds:Cmds) -> Cmd :
+  install $ Cmd("toggle-1", { set-x(key-1, 1.0f - x(key-1)) }, key, cmds)
+
+public val key-2 = SymVar(`key-2, 0.0f, false, false)
+
+defn toggle-2-cmd (v:ConstraintsViz, key:Key, cmds:Cmds) -> Cmd :
+  install $ Cmd("toggle-2", { set-x(key-2, 1.0f - x(key-2)) }, key, cmds)
+
+defmethod init (v:ConstraintsViz) -> False :
+  if not init?(v) :
+    set-init?(v, true)
+    start-init(v)
+    val placer = ConstraintsModel("placer", body(v))
+    val placer-view = ConstraintsView("placer", placer, buf(v), keys(v), Keys(), Cmds(), Props(), xform(v))
+    add(views(v), placer-view)
+    for vr in vars(v) do :
+      install(props(v), FloatProp(string-join $ ["constraints/" id(vr)], { x(vr) }, { set-x(vr, _) }))
+    ; val step-cmd = step-part-cmd(v, Key("s"), cmds(v))
+    val run-cmd = run-cmd(v, Key("r"), cmds(v))
+    val pause-cmd = pause-cmd(v, Key("p"), cmds(v))
+    val step-cmd = step-cmd(v, Key("s"), cmds(v))
+    val toggle-1-cmd = toggle-1-cmd(v, Key("1"), cmds(v))
+    val toggle-2-cmd = toggle-2-cmd(v, Key("2"), cmds(v))
+    ; val save-cmd = save-cmd(v, Key("l"), cmds(v))
+    install-cmd-keys([run-cmd pause-cmd step-cmd, toggle-1-cmd, toggle-2-cmd], keys(v)) ; step-cmd save-cmd 
+    push-set-root(v, top-layout(v, Tile(placer-view, false)))
+    set-tile(v, children(root(v))[0] as Tile)
+    end-init(v)
+
+defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
+  set-fps(v, 1.0f / delta)
+  #if-defined(PLATFORM-OS-X) :
+    gl-line-width(3.0f)
+  #else :
+    gl-line-width(2.0f)
+  exec(root(v))
+  render(root(v), w, h)
+  val run? = running?(v) or step?(v)
+  if run? :
+    set-t(body(v), t(body(v)) + delta)
+    set-tick(body(v), tick(body(v)) + 1)
+    set-x(time(v), t(body(v)))
+    next(body(v), tick(body(v)), t(body(v)))
+    val timer = MicrosecondTimer("GRAD")
+    start(timer)
+    for i in 0 to top-num-gradient-steps do :
+      clear(body(v))
+      apply(body(v))
+      update(body(v))
+    stop(timer)
+    if top-show-cost? :
+      for c in costs(body(v)) do :
+        val dat = data(machine(c))
+        println("COST %_ (%_)" % [dat[cost-off(c)], timer])
+    glyph-stroking? = true
+    set-step?(v, false)
+
+defmethod pick (v:ConstraintsViz, names:Seqable<V3i>) -> False :
+  false
+
+defmethod drag (v:ConstraintsViz, names:Seqable<V3i>, delta:V2f) -> False :
+  val verts = vertices(body(v))
+  val xform = xform(view(tile(v)))
+  for name in names do :
+    val idx = x(name) - 1
+    if idx >= 0 and idx < length(verts) :
+      set-pos(verts[idx], pos(verts[idx]) + xyz(0.025f * mag(xform) * delta))
+
+;; defn save (t:Constraints, print?:True|False) :
+;;   if input-filename != "" :
+
+public val screen-props = Props()
+public var win-width = 640
+install(screen-props, IntProp("width", { win-width }, { win-width = _ }))
+public var win-height = 480
+install(screen-props, IntProp("height", { win-height }, { win-height = _ }))
+public var is-fullscreen = false
+install(screen-props, BoolProp("is-fullscreen", { is-fullscreen }, { is-fullscreen = _ }))
+install(screen-props, BoolProp("is-jit", { jit? }, { jit? = _ }))
+public var top-trace? = false
+install(screen-props, BoolProp("trace", { top-trace? }, { top-trace? = _ }))
+public var top-name = "vertical-line"
+install(screen-props, StringProp("name", { top-name }, { top-name = _ }))
+public var top-seed = -1
+install(screen-props, IntProp("seed", { top-seed }, { top-seed = _ }))
+public var top-show-labels? = false
+install(screen-props, BoolProp("is-show-labels", { top-show-labels? }, { top-show-labels? = _ }))
+public var top-show-velocity? = false
+install(screen-props, BoolProp("is-show-velocity", { top-show-velocity? }, { top-show-velocity? = _ }))
+public var top-show-cost? = false
+install(screen-props, BoolProp("is-show-cost", { top-show-cost? }, { top-show-cost? = _ }))
+public var top-num-gradient-steps = 200
+install(screen-props, IntProp("num-gradient-steps", { top-num-gradient-steps }, { top-num-gradient-steps = _ }))
+public var top-n-0 = 1
+install(screen-props, IntProp("n-0", { top-n-0 }, { top-n-0 = _ }))
+public var top-n-1 = 1
+install(screen-props, IntProp("n-1", { top-n-1 }, { top-n-1 = _ }))
+public var top-n-2 = 1
+install(screen-props, IntProp("n-2", { top-n-2 }, { top-n-2 = _ }))
+public var top-x-0 = 0.0f
+install(screen-props, FloatProp("x-0", { top-x-0 }, { top-x-0 = _ }))
+public var top-x-1 = 0.0f
+install(screen-props, FloatProp("x-1", { top-x-1 }, { top-x-1 = _ }))
+public var top-x-2 = 0.0f
+install(screen-props, FloatProp("x-2", { top-x-2 }, { top-x-2 = _ }))
+public var top-kind-0 = "tet"
+install(screen-props, StringProp("kind-0", { top-kind-0 }, { top-kind-0 = _ }))
+
+install(screen-props, FloatProp("delta", { DELTA }, { DELTA = _ }))
+
+install(screen-props, IntProp("num-registers", { NUM-REGISTERS }, { NUM-REGISTERS = _ }))
+install(screen-props, BoolProp("is-old", { OLD? }, { OLD? = _ }))
+install(screen-props, BoolProp("is-cond-op", { COND-OP? }, { COND-OP? = _ }))
+install(screen-props, BoolProp("use-registers", { USE-REGISTERS? }, { USE-REGISTERS? = _ }))
+install(screen-props, BoolProp("is-trace", { TRACE? }, { TRACE? = _ }))
+install(screen-props, BoolProp("is-debug", { DEBUG? }, { DEBUG? = _ }))
+install(screen-props, BoolProp("is-time", { TIME? }, { TIME? = _ }))
+install(screen-props, BoolProp("is-disassemble", { disassemble? }, { disassemble? = _ }))
+
+public defn run-module (m:Module, time:SymVar) :
+  val rt = jit-runtime-new()
+  *active-tiling* = false ; TODO -- INIT STATE -- CAN JUST DO RELOAD
+  ensure-gui-init()
+  gui-window-hint(GUI-SAMPLES, 64)
+  gui-window-hint(GUI-ALPHA-BITS, 8)
+  gui-window-hint(GUI-DOUBLE-BUFFER, GL-TRUE)
+  srand(current-time-ms())
+  parse-args(screen-props, command-line-arguments())
+  val win =
+    if is-fullscreen :
+      val mon  = gui-get-primary-monitor()
+      val mode = gui-get-video-mode(mon)
+      gui-create-window(width(mode), height(mode), "Constraints", mon)
+    else :
+      gui-create-window(win-width, win-height, "Constraints")
+  println("BUILDING BODY...")
+  val c = Body(m)
+  println("START COMPILING...")
+  compile(c, rt)
+  println("DONE COMPILING...")
+  val v = ConstraintsViz(win, c, symvars(c), time)
+  set-throttling?(v, false)
+  init(v)
+  parse-args(props(v), command-line-arguments())
+  ;; if input-filename != "" :
+  ;;   val a = leds(v)
+  ;;   set-leds(v, Constraints(num-iters(a)))
+  run(v)
+

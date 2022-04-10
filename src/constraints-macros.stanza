@@ -1,0 +1,117 @@
+defpackage constraints-macros :
+  import core
+  import collections
+  import reader
+  import stz/core-macros
+  import macro-utils
+  import syntax-utils
+
+deftype ModuleExp
+defstruct EntityExp <: ModuleExp :
+  name : Token|Symbol
+  type : ?
+  args : List<?>
+
+defstruct InstExp <: ModuleExp :
+  name : Token|Symbol
+  type : ?
+  args : List<?>
+  
+defstruct CostExp <: ModuleExp :
+  value : ?
+  
+defstruct ExpExp <: ModuleExp :
+  value : ?
+  
+defstruct Binding :
+  name : Token|Symbol
+  type : ?
+
+defsyntax constraints :
+  import (exp4, exp!, id, :!, id!, type!, exp$) from core
+  defrule exp4 = (macroexpand-quote(?forms:#exp! ...)) :
+    qquote($quote ~ forms)
+
+  defrule exp4 = (defmodule ?name:#id! ?parent:#module-parent ?params:#module-params ?exps:#module-exps) :
+    parse-syntax[core / #exp](
+      gen-defmodule(name, parent, params, exps))
+
+  defproduction module-param!:Binding
+  defrule module-param! = (?id:#id! : ?type:#exp!) : Binding(id, type)
+
+  defproduction module-params:List<Binding>
+  defrule module-params = ((?bindings:#module-param! ...)) : bindings
+  defrule module-params = () : List()
+
+  defproduction module-parent:Maybe
+  defrule module-parent = (<: ?p:#type!) : One(p)
+  defrule module-parent = () : None()
+
+  defproduction module-exps:List<ModuleExp>
+  defrule module-exps = (: (?es:#module-exp! ...)) : es
+  defrule module-exps = () : List()
+
+  defproduction args!:List<?>
+  defrule args! = ((?args:#exp! ...)) : args
+  defrule args! = () : List()
+
+  defproduction module-exp!:ModuleExp
+  defrule module-exp! = (entity ?name:#id! ?t:#id! ?args:#args!) :
+    EntityExp(name, t, args)
+  defrule module-exp! = (cost ?cost:#exp!) :
+    CostExp(cost)
+  defrule module-exp! = (inst ?name:#id! ?t:#id! ?args:#args!) :
+    InstExp(name, t, args)
+  defrule module-exp! = (?e:#exp!) :
+    ExpExp(e)
+
+
+defn gen-defmodule (module-name:Token|Symbol, module-parent:Maybe, module-params:List<?>, module-exps:List<ModuleExp>) :
+  val template = `((
+    defstruct module-name parent?{<: parent}{} :
+      id : Symbol with: (as-method => true)
+      exps{field?{ field-name : field-type }{}}
+      entities : Tuple<Entity> with: (as-method => true)
+      cost : Exp with: (as-method => true, updater => sub-cost)
+    defn MainConstructor (id:Symbol, module-params) :
+      exps{
+        entity?{
+          val entity-name = entity-type(`entity-name, entity-args)
+        }{}
+        inst?{
+          val inst-name = make-instance(inst-symbol, { inst-type(_, inst-args) })
+        }{}
+        exp?{
+          exp-value
+        }{}
+      }
+      val cost = sum $ exps{ cost?{ cost-value }{} }
+      val field-args = 
+      Struct(id, exps{field?{ field-name }{}}, [ exps{field?{ field-name }{} } ], cost)
+   ))
+  val filled = fill-template(template, [
+    `parent? => module-parent is One
+    `parent => match(module-parent:One) : value(module-parent)
+    `module-name => module-name
+    `module-params => module-params
+    `exps => nested $
+      for exp in module-exps map :
+        [`cost? => exp is CostExp,
+         `cost-value => match(exp:CostExp) : value(exp)
+         `entity? => exp is EntityExp,
+         `entity-name => match(exp:EntityExp) : name(exp)
+         `entity-args => match(exp:EntityExp) : args(exp)
+         `entity-type => match(exp:EntityExp) : type(exp)
+         `exp? => exp is ExpExp,
+         `exp-value => match(exp:ExpExp) : value(exp)
+         `inst? => exp is InstExp,
+         `inst-type => match(exp:InstExp) : type(exp)
+         `inst-args => match(exp:InstExp) : args(exp)
+         `field? => exp is EntityExp|InstExp
+         `field-name => match(exp:EntityExp|InstExp) : name(exp)
+         `field-type => match(exp:EntityExp|InstExp) : type(exp)
+         ]
+    ])
+  println(filled)
+  filled
+

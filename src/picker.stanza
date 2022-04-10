@@ -1,0 +1,218 @@
+defpackage picker :
+  import core
+  import collections
+  import math
+  import geom/vec
+  import gfx/gl
+  import gfx/glu
+  import gfx/glfw
+  import gfx/drawing
+
+val board = Array<Array<Int>>(3)
+val offsets = Array<Array<V2f>>(3)
+
+defn draw-squares (mode:Int) :
+  for i in 0 to 3 do :
+    if mode == GL-SELECT :
+      println("LOAD %_" % [i])
+      gl-load-name(i)
+    for j in 0 to 3 do :
+      if mode == GL-SELECT :
+        gl-push-name(j)
+      gl-color3f(to-float(i) / 3.0f, to-float(j) / 3.0f, to-float(board[i][j]) / 3.0f)
+      gl-push-matrix()
+      val loc = offsets[i][j] + V2f(to-float(i) + 0.5f, to-float(j) + 0.5f)
+      gl-translate(xyz(loc))
+      draw-quad(1.0f, 1.0f)
+      if mode == GL-SELECT :
+        gl-pop-name()
+      gl-pop-matrix()
+
+val BUFSIZE = 512
+val select-buf = IntArray(BUFSIZE)
+val selected-squares = Vector<[Int,Int]>()
+
+defn process-hits (hits:Int, buffer:IntArray) :
+  println("hits = %_" % [hits])
+  val indices = to-seq(0 to false)
+  defn next-elt () : buffer[next(indices)]
+  var ii:Int = 0
+  var jj:Int = 0
+  clear(selected-squares)
+  println("BUF %_" % [buffer[0]])
+  for i in 0 to hits do :
+    val names = next-elt()
+    println(" number of names for hit = %_" % [names])
+    print("  z1 is %_;" % [bits-as-float(next-elt())])
+    println(" z2 is %_" % [bits-as-float(next-elt())])
+    print("   the name is ")
+    for j in 0 to names do :
+      val elt = next-elt()
+      print("%_ " % [elt])
+      if j == 0 : ii = elt
+      else if j == 1 : jj = elt
+    println("")
+    board[ii][jj] = (board[ii][jj] + 1) % 3
+    add(selected-squares, [ii, jj])
+
+var old-location:V2f = xy(0.0f)
+
+defn handle-cursor (w:Window, x:Float, y:Float) :
+  val new-location = V2f(x, y)
+  val offset = 2.0f * ((new-location - old-location) * V2f(1.0f, -1.0f)) / V2f(640.0f, 480.0f)
+  for [ii, jj] in selected-squares do :
+    offsets[ii][jj] = offsets[ii][jj] + offset
+  old-location = new-location
+  false  
+
+defn handle-mouse-buttons (w:Window, button:Int, action:Int, mods:Int) :
+   if button == GUI-MOUSE-BUTTON-LEFT :
+     if action == GUI-PRESS :
+       val [x, y] = gui-get-cursor-pos(w)
+
+       old-location = V2f(x, y)
+
+       gl-select-buffer(BUFSIZE, select-buf)
+
+       val viewport = IntArray(4)
+       gl-get-ints(GL-VIEWPORT, viewport)
+       viewport[2] = viewport[2] / 2
+       viewport[3] = viewport[3] / 2
+       gl-clear(GL-COLOR-BUFFER-BIT | GL-DEPTH-BUFFER-BIT)
+       gl-render-mode(GL-SELECT)
+       gl-init-names()
+       gl-push-name(0)
+       gl-matrix-mode(GL-PROJECTION)
+       gl-push-matrix()
+       gl-load-identity()
+       glu-pick-matrix(x, to-float(viewport[3]) - y, 10.0f, 10.0f, viewport)
+       println("X %_ Y %_ VP %_" % [x, y, viewport])
+       glu-ortho2d(0.0f, 3.0f, 0.0f, 3.0f)
+       draw-squares(GL-SELECT)
+
+       gl-matrix-mode(GL-PROJECTION)
+       gl-pop-matrix()
+       gl-flush()
+
+       val hits = gl-render-mode(GL-RENDER)
+       process-hits(hits, select-buf)
+
+     else if action == GUI-RELEASE :
+
+      clear(selected-squares)
+
+defn init () :
+  gl-enable(GL-DEPTH-TEST)
+  ; gl-shade-model(GL-FLAT)
+  for i in 0 to 3 do :
+    board[i] = Array<Int>(3)
+    offsets[i] = Array<V2f>(3)
+    for j in 0 to 3 do :
+      board[i][j] = i * 3 + j;
+      offsets[i][j] = xy(0.0f)
+
+defn display () :
+  ; gl-clear-color(0.0f, 0.0f, 0.0f, 0.0f)
+  gl-clear(GL-COLOR-BUFFER-BIT | GL-DEPTH-BUFFER-BIT)
+  gl-push-matrix()
+  glu-ortho2d(0.0f, 3.0f, 0.0f, 3.0f)
+  draw-squares(GL-RENDER)
+  gl-pop-matrix()
+  gl-flush()
+
+defn main () :
+  gui-init()
+  val window = gui-create-window(640, 480, "picking")
+  gui-make-context-current(window)
+  gui-set-cursor-callback(window, handle-cursor)
+  init()
+  gui-set-mouse-button-callback(window, handle-mouse-buttons)
+  while not gui-window-should-close(window) :
+    display()
+    gui-swap-buffers(window)
+    gui-poll-events()
+  gui-terminate()
+
+main()
+
+; ; --------------------
+; 
+; defn select-objects (w:Window, x:Float, y:Float) :
+;    gl-select-buffer(BUFSIZE, select-buf)
+; 
+;    gl-init-names()
+;    gl-push-name(0)
+; 
+;    gl-matrix-mode(GL-PROJECTION)
+;    gl-push-matrix()
+;    gl-load-identity()
+;    val viewport = IntArray(4)
+;    gl-get-ints(GL-VIEWPORT, viewport)
+;    println("X %_ Y %_ VP %_" % [x, y, viewport])
+;    glu-pick-matrix(x, to-float(viewport[3]) - y, 5.0f, 5.0f, viewport)
+;    gl-ortho(0.0f, 5.0f, 0.0f, 5.0f, 0.0f, 10.0f)
+; 
+;    gl-render-mode(GL-SELECT)
+;    gl-matrix-mode(GL-MODELVIEW)
+;    gl-load-identity()
+;    gl-load-name(1)
+;    draw-triangle(2.0f, 2.0f, 3.0f, 2.0f, 2.5f, 3.0f, -5.0f)
+;    gl-load-name(2)
+;    draw-triangle(2.0f, 7.0f, 3.0f, 7.0f, 2.5f, 8.0f, -5.0f)
+;    gl-load-name(3)
+;    draw-triangle(2.0f, 2.0f, 3.0f, 2.0f, 2.5f, 3.0f, 0.0f)
+;    draw-triangle(2.0f, 2.0f, 3.0f, 2.0f, 2.5f, 3.0f, -10.0f)
+;    gl-pop-matrix()
+;    gl-flush()
+; 
+;    val hits = gl-render-mode(GL-RENDER)
+;    process-hits(hits, select-buf)
+; 
+; defn draw-triangle (x1:Float, y1:Float, x2:Float, y2:Float, x3:Float, y3:Float, z:Float) :
+;   gl-begin(GL-TRIANGLES)
+;   gl-vertex3f(x1, y1, z)
+;   gl-vertex3f(x2, y2, z)
+;   gl-vertex3f(x3, y3, z)
+;   gl-end()
+; 
+; defn draw-view-volume (x1:Float, x2:Float, y1:Float, y2:Float, z1:Float, z2:Float) :
+;   gl-color3f(1.0f, 1.0f, 1.0f)
+;   gl-begin(GL-LINE-LOOP)
+;   gl-vertex3f(x1, y1, (- z1))
+;   gl-vertex3f(x2, y1, (- z1))
+;   gl-vertex3f(x2, y2, (- z1))
+;   gl-vertex3f(x1, y2, (- z1))
+;   gl-end()
+; 
+;   gl-begin(GL-LINE-LOOP)
+;   gl-vertex3f(x1, y1, (- z2))
+;   gl-vertex3f(x2, y1, (- z2))
+;   gl-vertex3f(x2, y2, (- z2))
+;   gl-vertex3f(x1, y2, (- z2))
+;   gl-end()
+; 
+;   gl-begin(GL-LINES)
+;   gl-vertex3f(x1, y1, (- z1))
+;   gl-vertex3f(x1, y1, (- z2))
+;   gl-vertex3f(x1, y2, (- z1))
+;   gl-vertex3f(x1, y2, (- z2))
+;   gl-vertex3f(x2, y1, (- z1))
+;   gl-vertex3f(x2, y1, (- z2))
+;   gl-vertex3f(x2, y2, (- z1))
+;   gl-vertex3f(x2, y2, (- z2))
+;   gl-end()
+; 
+; defn draw-scene () :
+;   gl-matrix-mode(GL-PROJECTION)
+;   gl-load-identity()
+;   glu-perspective(40.0f, 4.0f / 3.0f, 1.0f, 100.0f)
+;   glu-look-at(7.5f, 7.5f, 12.5f, 2.5f, 2.5f, -5.0f, 0.0f, 1.0f, 0.0f)
+;   gl-color3f(0.0f, 1.0f, 0.0f)
+;   draw-triangle(2.0f, 2.0f, 3.0f, 2.0f, 2.5f, 3.0f, -5.0f)
+;   gl-color3f(1.0f, 0.0f, 0.0f)
+;   draw-triangle(2.0f, 7.0f, 3.0f, 7.0f, 2.5f, 8.0f, -5.0f)
+;   gl-color3f(1.0f, 1.0f, 0.0f)
+;   draw-triangle(2.0f, 2.0f, 3.0f, 2.0f, 2.5f, 3.0f, 0.0f)
+;   draw-triangle(2.0f, 2.0f, 3.0f, 2.0f, 2.5f, 3.0f, -10.0f)
+;   draw-view-volume(0.0f, 5.0f, 0.0f, 5.0f, 0.0f, 10.0f)
+; 

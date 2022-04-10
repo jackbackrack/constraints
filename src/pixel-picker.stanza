@@ -1,0 +1,110 @@
+defpackage pixel-picker :
+  import core
+  import collections
+  import math
+  import geom/vec
+  import gfx/gl
+  import gfx/glu
+  import gfx/glfw
+  import gfx/drawing
+
+val board = Array<Array<Int>>(3)
+val offsets = Array<Array<V2f>>(3)
+
+val MAX-DIM = 3
+
+defn draw-squares (mode:Int) :
+  for i in 0 to 3 do :
+    for j in 0 to 3 do :
+      if mode == GL-SELECT :
+        gl-color3f(to-float(i) / 256.0f, to-float(j) / 256.0f, 0.0f)
+      else :
+        gl-color3f(to-float(i) / 3.0f, to-float(j) / 3.0f, to-float(board[i][j]) / 3.0f)
+      gl-push-matrix()
+      val loc = offsets[i][j] + V2f(to-float(i) + 0.5f, to-float(j) + 0.5f)
+      gl-translate(xyz(loc))
+      draw-quad(1.0f, 1.0f)
+      gl-pop-matrix()
+
+val selected-squares = Vector<[Int,Int]>()
+
+defn process-pixel (pixel:Int) :
+  val r = (pixel >>  0) & 0xff
+  val g = (pixel >>  8) & 0xff
+  val b = (pixel >> 16) & 0xff
+  val a = (pixel >> 24) & 0xff
+  println("PIXEL %_ R %_ G %_ B %_ A %_" % [pixel, r, g, b, a])
+  val i = r
+  val j = g
+  if i < MAX-DIM and j < MAX-DIM :
+    add(selected-squares, [i, j])
+
+var old-location:V2f = xy(0.0f)
+
+defn handle-cursor (w:Window, x:Float, y:Float) :
+  val new-location = V2f(x, y)
+  val offset = 2.0f * ((new-location - old-location) * V2f(1.0f, -1.0f)) / V2f(640.0f, 480.0f)
+  for [ii, jj] in selected-squares do :
+    offsets[ii][jj] = offsets[ii][jj] + offset
+  old-location = new-location
+  false  
+
+defn handle-mouse-buttons (w:Window, button:Int, action:Int, mods:Int) :
+   if button == GUI-MOUSE-BUTTON-LEFT :
+     if action == GUI-PRESS :
+       val [x, y] = gui-get-cursor-pos(w)
+       val [ix, iy] = [to-int(x), to-int(y)]
+       val [ixx, iyy] = [2 * ix, 2 * iy]
+       val viewport = IntArray(4)
+       gl-get-ints(GL-VIEWPORT, viewport)
+       val [iww, ihh] = [viewport[2], viewport[3]]
+       val [iw,  ih]  = [iww / 2,     ihh / 2]
+       gl-clear(GL-COLOR-BUFFER-BIT | GL-DEPTH-BUFFER-BIT)
+       gl-push-matrix()
+       glu-ortho2d(0.0f, 3.0f, 0.0f, 3.0f)
+       draw-squares(GL-SELECT)
+       gl-pop-matrix()
+       gl-flush()
+       ; println("IX %_ IY %_ IW %_ IH %_" % [ix, iy, iw, ih])
+       ; val pixel0 = gl-read-pixel(ix, ih - iy)
+       ; process-pixel(pixel0)
+       println("IXX %_ IYY %_ IWW %_ IHH %_" % [ixx, iyy, iww, ihh])
+       val pixel1 = gl-read-pixel(ixx, ihh - to-int(iyy))
+       process-pixel(pixel1)
+
+     else if action == GUI-RELEASE :
+
+      clear(selected-squares)
+
+defn init () :
+  gl-enable(GL-DEPTH-TEST)
+  for i in 0 to 3 do :
+    board[i] = Array<Int>(3)
+    offsets[i] = Array<V2f>(3)
+    for j in 0 to 3 do :
+      board[i][j] = i * 3 + j;
+      offsets[i][j] = xy(0.0f)
+
+defn display () :
+  gl-clear(GL-COLOR-BUFFER-BIT | GL-DEPTH-BUFFER-BIT)
+  gl-push-matrix()
+  glu-ortho2d(0.0f, 3.0f, 0.0f, 3.0f)
+  draw-squares(GL-RENDER)
+  gl-pop-matrix()
+  gl-flush()
+
+defn main () :
+  gui-init()
+  val window = gui-create-window(640, 480, "picking")
+  gui-make-context-current(window)
+  gui-set-cursor-callback(window, handle-cursor)
+  init()
+  gui-set-mouse-button-callback(window, handle-mouse-buttons)
+  while not gui-window-should-close(window) :
+    display()
+    gui-swap-buffers(window)
+    gui-poll-events()
+  gui-terminate()
+
+main()
+

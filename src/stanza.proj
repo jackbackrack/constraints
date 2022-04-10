@@ -1,0 +1,25 @@
+package constraints defined-in "constraints.stanza"
+package constraints-viz defined-in "constraints-viz.stanza"
+package constraints-app defined-in "constraints-app.stanza"
+package constraints-simple-app defined-in "constraints-simple-app.stanza"
+package constraints-dancer-app defined-in "constraints-dancer-app.stanza"
+package constraints-kinematics-app defined-in "constraints-kinematics-app.stanza"
+; package tiny-constraints-app defined-in "tiny-constraints-app.stanza"
+package constraints-macros defined-in "constraints-macros.stanza"
+package calculus defined-in "calculus.stanza"
+package calculus-app defined-in "calculus-app.stanza"
+package picker defined-in "picker.stanza"
+package pixel-picker defined-in "pixel-picker.stanza"
+
+package solvespace defined-in "solvespace.stanza"
+package solvespace requires :
+  ccfiles :
+    "{WORKDIR}/build/solvespace.o"
+  ccflags :
+    on-platform :
+      os-x  : ( "-lslvs" "-lc++")
+      linux : ( "-lslvs" "-lstdc++")
+compile file "{WORKDIR}/build/solvespace.o" from "solvespace.cpp" :
+  "g++ -std=c++11 -D{PLATFORM} -DGL_SILENCE_DEPRECATION -c {.}/solvespace.cpp -o {WORKDIR}/build/solvespace.o"
+
+package solvespace-demo defined-in "solvespace-demo.stanza"

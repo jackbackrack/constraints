@@ -1,0 +1,711 @@
+defpackage constraints-kinematics-app :
+  import core
+  import math
+  import collections
+  import utils/file-system
+  import utils/math
+  import utils/rnd
+  import utils/seqable
+  import geom/vec
+  import geom/mat
+  import geom/angle
+  import geom/shape
+  import geom/bounded
+  import geom/poseable
+  import geom/line-segment
+  import geom/polygon
+  import geom/polyline
+  import geom/line-loop
+  import geom/box
+  import geom/polyhedron
+  import geom/polyhedra
+  import gui/props
+  import gui/lay
+  import gui/viz
+  import gfx/gl
+  import gfx/glfw
+  import geom/gfx
+  import gfx/drawing
+  import calculus
+  import constraints
+  import constraints-viz
+
+defstruct LinkSpec :
+  name : Symbol
+  len : Float
+  ; start : Symbol
+  ; end : Symbol
+
+; defn vertices (spec:LinkSpec) -> Tuple<Symbol> :
+;   [start(spec), end(spec)]
+; 
+; defn connected? (spec:LinkSpec, vertex:Symbol) -> True|False :
+;   start(spec) == vertex or end(spec) == vertex
+; 
+; defn other (spec:LinkSpec, vertex:Symbol) -> Symbol :
+;   start(spec) when end(spec) == vertex else end(spec)
+
+; defenum LinkSide :
+;   LinkStart
+;   LinkEnd
+; 
+; defstruct LinkVertexSpec :
+;   link : Symbol
+;   side : LinkSide
+
+defenum JointKind :
+  HingeJoint
+  RotaryJoint
+
+defstruct JointSpec :
+  name : Symbol
+  ; axis : Int
+  ; limits : Box1f
+  kind: JointKind
+  link0 : Symbol
+  link1 : Symbol
+
+defn connected? (spec:JointSpec, link:Symbol) -> True|False :
+  link0(spec) == link or link1(spec) == link
+
+defn other (spec:JointSpec, link:Symbol) -> Symbol :
+  link0(spec) when link1(spec) == link else link1(spec)
+
+defmulti joint-angle (kind:JointKind, l0:Link, l1:Link) -> Angle 
+defmulti joint-cost (kind:JointKind, l0:Link, l1:Link) -> Exp
+
+defstruct KinematicsSpec :
+;  root : Symbol
+  links : Tuple<LinkSpec>
+  joints : Tuple<JointSpec>
+
+; defn vertices (spec:KinematicsSpec) -> Seqable<Symbol> :
+;   unique $ for link in links(spec) seq-cat : [start(link), end(link)]
+; 
+; defn links-of (spec:KinematicsSpec, vertex:Symbol) -> Seqable<LinkSpec> :
+;   for link in links(spec) filter : connected?(link, vertex)
+
+defstruct Link <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float
+  rnd-radius : Float with: (default => 1.0f)
+  len : Const with: (init => Const(init-len))
+  a : Vertex with: (init => Vertex(`a, false, V3f( -5.0f, 0.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f)), false))
+  b : Vertex with: (init => Vertex(`b, false, V3f(  5.0f, 0.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f)), false))
+  c : Vertex with: (init => Vertex(`c, true,  V3f( -5.0f, 0.0f, 5.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f)), false))
+  y : Edge with: (init => Edge(`y, a, b))
+  z : Edge with: (init => Edge(`z, a, c, true, false))
+  ang : Angle with: (init => ConnectedAngle(`abc, y, z, true))
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, c, y, z, ang])
+  cost : Exp with: (as-method => true, init =>
+    EdgeLengthConstraint( exp(y), len) + OrthogonalConstraint(exp(y), exp(z))) ;AngleConstraint(ang, Const(PI-F / 2.0f)))
+
+defmethod joint-angle (kind:HingeJoint, l0:Link, l1:Link) : 
+  Angle(`ang, b(l0), a(l0), a(l1), b(l1), true)
+
+defmethod joint-cost (kind:HingeJoint, l0:Link, l1:Link) :
+  ; OrthogonalConstraint(exp(z(l0)), exp(z(l1)))
+  ParallelConstraint(exp(z(l0)), exp(z(l1)))
+
+defmethod joint-angle (kind:RotaryJoint, l0:Link, l1:Link) :
+  Angle(`ang, z(l0), z(l1), true)
+
+defmethod joint-cost (kind:RotaryJoint, l0:Link, l1:Link) :
+  ParallelConstraint(exp(y(l0)), exp(y(l1)))
+
+defstruct Joint <: Module :
+  id : Symbol with: (as-method => true)
+  kind : JointKind
+  l0 : Link
+  l1 : Link
+  ang : Angle with: (init => joint-angle(kind, l0, l1))
+  entities : Tuple<Entity> with: (as-method => true, init => [ang])
+  cost : Exp with: (as-method => true, init =>
+    joint-cost(kind, l0, l1) +
+    SameVertexConstraint( [ b(l0), a(l1) ])
+    )
+
+defstruct KinematicsBody <: Module :
+  id : Symbol with: (as-method => true)
+  specs : KinematicsSpec
+  link-table : HashTable<Symbol,Link> with: (init => HashTable<Symbol,Link>())
+  links : Tuple<Link> with: (init => to-tuple $ for spec in links(specs) seq :
+    val link = make-instance(name(spec), Link{_, len(spec)})
+    println("link %_" % [name(spec)])
+    link-table[name(spec)] = link
+    link)
+  joints : Tuple<Joint> with: (init => to-tuple $ for spec in joints(specs) seq :
+    val l0 = link-table[link0(spec)]
+    val l1 = link-table[link1(spec)]
+    println("joint %_" % [name(spec)])
+    make-instance(name(spec), Joint{_, kind(spec), l0, l1}))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat(links, joints))
+  cost : Exp with: (as-method => true, init => Const(0.0f))
+
+defn joints (spec:KinematicsSpec, link:Symbol) -> Seqable<JointSpec> :
+  for joint in joints(spec) filter : connected?(joint, link)
+
+;;; KINEMATICS EXP
+
+defstruct LinkExpSpec :
+  name : Symbol
+  node0 : Symbol
+  node1 : Symbol
+  len : Float
+with:
+  printer => true
+
+defstruct JointExpSpec :
+  name : Symbol
+  axis : Int
+  limits : Box1f
+  link0 : Symbol
+  link1 : Symbol
+with:
+  printer => true
+
+val default-limits = Box1f((- PI-F), PI-F)
+; val default-limits = Box1f(-0.5f * PI-F, 0.5f * PI-F)
+; val default-limits = Box1f(0.0f * PI-F, 0.0f * PI-F)
+
+defn connected? (spec:LinkExpSpec, node:Symbol) -> True|False :
+  node0(spec) == node or node1(spec) == node
+
+defn other (spec:LinkExpSpec, node:Symbol) -> Symbol :
+  node0(spec) when node1(spec) == node else node1(spec)
+
+defn connected? (spec:JointExpSpec, link:Symbol) -> True|False :
+  link0(spec) == link or link1(spec) == link
+
+defn other (spec:JointExpSpec, link:Symbol) -> Symbol :
+  link0(spec) when link1(spec) == link else link1(spec)
+
+defstruct KinematicsExpSpec :
+  root : Symbol
+  links : Tuple<LinkExpSpec>
+  joints : Tuple<JointExpSpec>
+with:
+  printer => true
+
+defn KinematicsExpSpec (root:Symbol, i-links-and-joints:Seqable<LinkExpSpec|JointExpSpec>) -> KinematicsExpSpec :
+  val lj = to-tuple $ i-links-and-joints
+  KinematicsExpSpec(
+    root,
+    to-tuple $ filter-by<LinkExpSpec>(lj), 
+    to-tuple $ filter-by<JointExpSpec>(lj))
+
+defn links-with-node (spec:KinematicsExpSpec, node:Symbol) -> Seq<LinkExpSpec> :
+  for link in links(spec) filter : connected?(link, node)    
+
+defn mov-y-mat-exp (del:Exp) -> MatExp :
+  mov-mat-exp(Vec3Exp(Const(0.0f), del, Const(0.0f)))
+
+defstruct LinkExp <: Entity :
+  id : Symbol with: (as-method => true)
+  len : Float
+  edge : Edge         ; points to two 
+  axis : Int
+  angle : SymVar
+  limits : Box1f
+  pose : SimplePoseExp
+  ; local-mat : MatExp
+  global-mat : Mat
+
+defmethod draw (e:LinkExp, size:Float) :
+  gl-color3f(1.0f, 1.0f, 1.0f)
+  gl-push-matrix()
+  ; println("%_" % [value(global-mat(e))])
+  gl-mult-matrix(value(global-mat(e)))
+  ; gl-mult-matrix(id-mat44f())
+  gl-translatef(0.0f, -0.5f * len(e), 0.0f)
+  draw-rect3(0.5f, len(e), 1.0f)
+  gl-pop-matrix()
+
+defmethod vars (e:LinkExp) -> Seqable<AnyVar> :
+  cat(vars(edge(e)), [angle(e)])
+
+defn init-edges (id:Symbol, spec:KinematicsExpSpec, vertices:HashTable<Symbol,Vertex>) -> HashTable<Symbol,LinkExp> :
+  val link-specs = to-hashtable<Symbol, LinkExpSpec> $
+    for l in links(spec) seq : name(l) => l
+  val joint-specs = to-hashtable<[Symbol,Symbol], JointExpSpec> $
+    for j in joints(spec) seq-cat : [[link0(j),link1(j)] => j, [link1(j),link0(j)] => j]
+  val link-nbrs = HashTable<Symbol, List<Symbol>>(List())
+  for joint in joints(spec) do :
+    link-nbrs[link0(joint)] = cons(link1(joint), link-nbrs[link0(joint)])
+    link-nbrs[link1(joint)] = cons(link0(joint), link-nbrs[link1(joint)])
+
+  ; println(spec)
+  println(to-tuple $ link-nbrs)
+
+  val visited-links? = HashSet<Symbol>()
+  val origin = Vertex(root(spec), false, V3f(0.0f, 0.0f, 0.0f), true)
+  vertices[root(spec)] = origin
+  val link-exps = HashTable<Symbol,LinkExp>()
+  let loop (from-link-name:False|Symbol = false, from-vertex:Vertex = origin, from-global-mat:MatExp = mov-mat-exp(exp(origin))) :
+    println("FROM-LINK %_ FROM-VERTEX %_" % [from-link-name, name(from-vertex)])
+    for to-link-spec in links-with-node(spec, name(from-vertex)) do :
+      val to-link-name = name(to-link-spec)
+      if not visited-links?[to-link-name] :
+        println(">>> WALKING LINK %_" % [to-link-name])
+        add(visited-links?, to-link-name)
+        val [axis, angle, limits] =
+          match(from-link-name:Symbol) :
+            val joint-spec = joint-specs[[from-link-name, to-link-name]]
+            val angle-value = rnd(limits(joint-spec))
+            println("%_ %_ = %_" % [name(joint-spec), limits(joint-spec), radians-to-degrees(angle-value)])
+            val angle = SymVar(name(joint-spec), angle-value, limits(joint-spec)) 
+            [axis(joint-spec), angle, limits(joint-spec)]
+          else :
+            [2, SymVar(`root, 0.0f, false), Box1f(0.0f, 0.0f)]
+        val pose = SimplePoseExp(Vec3Exp(Const(0.0f), Const(len(to-link-spec)), Const(0.0f)), axis, exp(angle))
+        val to-local-mat = to-mat-exp(pose)
+        val to-global-mat = to-local-mat * from-global-mat
+        val to-global-mat-vars = Mat(to-link-name, to-global-mat)
+        val to-vertex-name = other(to-link-spec, name(from-vertex))
+        val to-vertex = Vertex(to-vertex-name, to-global-mat * Const(V3f(0.0f, 0.0f, 0.0f)))
+        vertices[to-vertex-name] = to-vertex
+        val edge = Edge(to-link-name, from-vertex, to-vertex)
+        val to-link-exp = LinkExp(to-link-name, len(to-link-spec), edge, axis, angle, limits, pose, to-global-mat-vars) ; to-local-mat, 
+        link-exps[to-link-name] = to-link-exp
+        loop(to-link-name, to-vertex, to-global-mat)
+        println("<<< WALKED LINK %_" % [to-link-name])
+
+  ; println(to-tuple $ link-exps)
+  ; println(to-tuple $ vertices)
+
+  link-exps
+
+defstruct KinematicsExpBody <: Module :
+  id : Symbol with: (as-method => true)
+  specs : KinematicsExpSpec
+  vertex-table : HashTable<Symbol,Vertex> with: (init => HashTable<Symbol,Vertex>())
+  link-table : HashTable<Symbol,LinkExp> with: (init => init-edges(id, specs, vertex-table))
+  entities : Tuple<Entity> with: (as-method => true, init =>
+    to-tuple $ cat-all $ [values(vertex-table), for l in values(link-table) seq-cat : [l, angle(l), edge(l), global-mat(l)]])
+  cost : Exp with: (as-method => true, init => Const(0.0f))
+
+defstruct KinematicsExpBody2 <: Module :
+  id : Symbol with: (as-method => true)
+  len : Const with: (init => Const(5.0f))
+  s : SymVar with: (init => SymVar(`s, PI-F / 4.0f))
+  t : SymVar with: (init => SymVar(`t, PI-F / 2.0f))
+  a : Vertex with: (init => Vertex(`a, false, V3f(0.0f, 0.0f, 0.0f), false))
+  b : Vertex with: (init => Vertex(`b, exp(a) + len * Vec3Exp(cos(exp(s)), sin(exp(s)), Const(0.0f))))
+  c : Vertex with: (init => Vertex(`c, exp(b) + len * Vec3Exp(cos(exp(t)), sin(exp(t)), Const(0.0f))))
+  ab : Edge with: (init => Edge(`ab, a, b))
+  bc : Edge with: (init => Edge(`bc, b, c))
+  entities : Tuple<Entity> with: (as-method => true, init => [s, t, a, b, c, ab, bc])
+  ; cost : Exp with: (as-method => true, init => SameVecConstraint([ exp(c) Vec3Exp(Const(-1.0f), Const(1.0f), Const(0.0f))]))
+  ; cost : Exp with: (as-method => true, init => SameConstraint(exp(y(c)) Const(0.0f)))
+  ; cost : Exp with: (as-method => true, init => SameConstraint(exp(x(c)) Const(-2.0f)))
+  cost : Exp with: (as-method => true, init => Const(0.0f))
+
+defn TimeKinematics (name:Symbol, radius:Float, time:SymVar) -> BindBody :
+  val path = PolyLinePath(`path, mag(xyz(radius)) $ square-path, 4.0f)
+  BindBody(`tkb, KinematicsExpBody2(`tab),
+           fn (m) : []
+           fn (m) : cat-all $ [ [ c(m) => exp(path) ] ]
+           to-tuple $ cat-all $ seq(vars, [path]))
+
+defn centering (m:KinematicsExpBody, center:(Tuple<Vec3Exp>, Vec3Exp) -> Exp) -> Exp :
+  center(to-tuple $ seq(exp, values(vertex-table(m))), Const(V3f(0.0f, 0.0f, 0.0f)))
+
+defn centering (m:KinematicsExpBody) -> Exp :
+  centering(m, CenterXZConstraint)
+
+defn straighten (m:KinematicsExpBody) -> Exp :
+  ; sum $ seq(fn (l) : exp(angle(l)) * exp(angle(l)), for l in values(link-table(m)) filter : axis(l) == 2)
+  sum $ seq(fn (l) : exp(angle(l)) * exp(angle(l)), values(link-table(m)))
+
+defn basing (m:KinematicsExpBody, origin:Float) -> Exp :
+  Const(10.0f) * SameVecConstraint([exp(vertex-table(m)[root(specs(m))]) Const(V3f(0.0f, origin, 0.0f))])
+
+defn TimeExpKinematics (name:Symbol, time:SymVar, spec:KinematicsExpSpec, new-entities:Seqable<Entity>,
+                        new-constraints:(KinematicsExpBody, HashTable<Symbol,Vertex>) -> Seqable<Exp>) -> BindBody :
+  val m = KinematicsExpBody(`main, spec)
+  BindBody(name, m, cat([ basing(m, -10.0f)], new-constraints(m, vertex-table(m))), to-tuple $ cat-all $ seq(vars, new-entities), new-entities)
+
+defn TimeExpKinematicsPath (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ path ], fn (m, verts) : [ centering(m), SameConstraint(exp(verts[tip]), exp(path)) ])
+
+defn TimeExpKinematicsPathCenter (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ path ], fn (m, verts) : [ centering(m, CenterConstraint),
+    SameConstraint(exp(verts[tip]), exp(path)) ])
+
+defn TimeExpKinematicsPaths (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec,
+                             paths:Tuple<KeyValue<Float, Vertex>>, tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, to-tuple $ cat([ time ], seq(value, paths)),
+    fn (m, verts) : to-tuple $ cat-all $ [ [ centering(m) ],
+      for ([s, e] in successive-pairs(cat([0.0f], cumsum(seq(key, paths)))), path in seq(value, paths)) seq :
+        println("S %_ E %_ V %_" % [s, e, id(path)])
+        pulse(exp(time), Const(s), Const(e)) * SameConstraint(exp(verts[tip]), exp(path)) ])
+
+defn TimeExpKinematicsPathStraighten (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ path ], fn (m, verts) : [ centering(m, CenterConstraint), Const(0.1f) * straighten(m),
+    SameConstraint(exp(verts[tip]), exp(path)) ])
+
+defn TimeExpKinematicsCircle (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, left-tip:Symbol, right-tip:Symbol) -> BindBody :
+  val r = SymVar(`radius, 1.0f * radius, false)
+  val circ  = Circle(`circle, Vertex(`center, V3f(0.0f, 0.0f, -4.0f)), r, true, false)
+  TimeExpKinematics(name, time, spec, [ path, circ, r ],
+    fn (m, verts) : [centering(m),
+      SameConstraint(exp(verts[right-tip]), exp(path))
+      ProjectOntoCircle(verts[left-tip], circ) ])
+
+defn TimeExpKinematicsPathWrist (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol, wrist:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ path ],
+    fn (m, verts) : [ centering(m), 
+      SameConstraint(exp(verts[tip]), exp(path))
+      HorizontalConstraint(exp(edge(link-table(m)[wrist]))) ])
+
+defn TimeExpKinematicsPathStraight (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol, side:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ path ],
+    fn (m, verts) :
+      val links = to-tuple $ for entry in link-table(m) filter :
+        prefix?(to-string(key(entry)), to-string(side)) and axis(value(entry)) == 2
+      cat-all $ [ [ centering(m, CenterConstraint), SameConstraint(exp(verts[tip]), exp(path)) ]
+        for link in links seq :
+          Const(4.0f) * SameConstraint(exp(angle(value(link))), Const(0.0f)) ] )
+
+defn TimeExpKinematicsReflect (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, left-tip:Symbol, right-tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ path ],
+    fn (m, verts) : [ centering(m)
+     SameConstraint(reflect-y-mat-exp() * reflect-x-mat-exp() * exp(verts[right-tip]), exp(verts[left-tip]))
+     SameConstraint(exp(verts[right-tip]), exp(path)) ])
+
+defn TimeExpKinematicsMirror (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, left-tip:Symbol, right-tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ path ],
+    fn (m, verts) : [ centering(m)
+      SameConstraint(
+       mov-mat-exp(Const(y3f(20.0f))) * mag-mat-exp(0.5f) * exp(verts[right-tip]),
+       exp(verts[left-tip]))
+      SameConstraint(exp(verts[right-tip]), exp(path)) ])
+
+defn TimeExpKinematicsBounce (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, left-tip:Symbol, right-tip:Symbol) -> BindBody :
+  val path1 = (reflect-xy-mat-exp() * bounce(24.0f, 2.0f, time)) + Const(V3f(0.0f, 8.0f, 0.0f))
+  ; val path1 = bounce(12.0f, 2.0f, time) + Const(V3f(-8.0f, 4.0f, 0.0f))
+  val path2 = bounce(4.0f, 0.5f, time)  + Const(V3f(0.0f,  2.0f, 0.0f))
+  ; val path2 = bounce(3.0f, 1.0f, time) + exp(vertex-table(m)[`origin]) - Const(V3f(0.0f, 1.5f, 0.0f))
+  TimeExpKinematics(name, time, spec, [ time ],
+    fn (m, verts) : [ centering(m)
+      SameConstraint(exp(verts[right-tip]), path1)
+      SameConstraint(y(exp(verts[`origin])), y(path2)) ])
+
+defn TimeLeg (name:Symbol, radius:Float, time:SymVar) -> BindBody :
+  val path = PolyLinePath(`path, mag(xyz(radius)) $ square-path, 4.0f)
+  val body = KinematicsBody(`main, robot-leg-spec)
+  BindBody(`tkb, body,
+           fn (m) : []
+           fn (m) : cat-all $ [
+             [ a(links(m)[0]) => Const(V3f(0.0f, 0.0f, 0.0f))
+               b(last(links(m))) => exp(path) ]
+             ]
+           to-tuple $ cat-all $ seq(vars, [path]))
+      
+val robot-arm-spec =
+  KinematicsSpec([LinkSpec(`lower, 10.0f), LinkSpec(`upper, 10.0f)],
+                 [JointSpec(`elbow, HingeJoint, `lower, `upper)])
+
+val robot-leg-spec =
+  KinematicsSpec([LinkSpec(`ankle, 5.0f), LinkSpec(`calf, 10.0f), LinkSpec(`thigh, 10.0f)],
+                 [JointSpec(`ankle, RotaryJoint, `ankle, `calf), JointSpec(`knee, HingeJoint, `calf, `thigh)])
+
+val robot-arm-spec0 =
+  KinematicsSpec([LinkSpec(`lower, 10.0f)], [])
+
+val robot-arm-exp-spec =
+  KinematicsExpSpec(
+    `shoulder,
+    [LinkExpSpec(`fore-arm, `hand, `elbow, 10.0f),
+     JointExpSpec(`elbow, 2, default-limits, `fore-arm, `upper-arm),
+     LinkExpSpec(`upper-arm, `elbow, `shoulder, 10.0f)])
+
+val robot-arm-exp-spec2 =
+  KinematicsExpSpec(
+    `torso,
+    [LinkExpSpec(`fore-arm, `elbow,     `hand, 10.0f),
+     JointExpSpec(`elbow, 2, default-limits, `upper-arm, `fore-arm),
+     LinkExpSpec(`upper-arm, `shoulder, `elbow, 10.0f)
+     JointExpSpec(`origin, 2, default-limits, `base, `upper-arm),
+     LinkExpSpec(`base,      `torso,    `shoulder, 0.0f)
+     ])
+
+val robot-arm-exp-spec3 =
+  KinematicsExpSpec(
+    `origin,
+    [LinkExpSpec(`hand, `wrist,     `finger, 5.0f),
+     JointExpSpec(`wrist, 2, default-limits, `fore-arm, `hand),
+     LinkExpSpec(`fore-arm, `elbow,     `wrist, 10.0f),
+     JointExpSpec(`elbow, 2, default-limits, `upper-arm, `fore-arm),
+     LinkExpSpec(`upper-arm, `shoulder, `elbow, 10.0f)
+     JointExpSpec(`origin, 2, default-limits, `pivot, `upper-arm),
+     LinkExpSpec(`pivot, `torso, `shoulder, 1.0f)
+     JointExpSpec(`torso, 1, default-limits, `base, `pivot),
+     LinkExpSpec(`base,      `origin,    `torso, 0.0f)
+     ])
+
+val open-manipulator-x-spec =
+  KinematicsExpSpec(
+    `origin,
+    [LinkExpSpec(`hand, `wrist,     `finger, 14.66f),
+     JointExpSpec(`wrist, 2, default-limits, `fore-arm, `hand),
+     LinkExpSpec(`fore-arm, `elbow,     `wrist, 12.4f),
+     JointExpSpec(`elbow, 2, default-limits, `upper-arm, `fore-arm),
+     LinkExpSpec(`upper-arm, `shoulder, `elbow, 12.8f)
+     JointExpSpec(`origin, 2, default-limits, `pivot, `upper-arm),
+     LinkExpSpec(`pivot, `torso, `shoulder, 4.6f)
+     JointExpSpec(`torso, 1, default-limits, `base, `pivot),
+     LinkExpSpec(`base,      `origin,    `torso, 3.0f)
+     ])
+
+val robot-leg-arm-exp-spec =
+  KinematicsExpSpec(
+    `foot,
+    [LinkExpSpec(`ankle, `foot, `knee, 10.0f)
+     JointExpSpec(`knee, 2, default-limits, `ankle, `thigh)
+     LinkExpSpec(`thigh, `knee, `torso, 10.0f),
+     JointExpSpec(`torso, 2, default-limits, `thigh, `upper-arm),
+     LinkExpSpec(`upper-arm, `torso, `elbow, 10.0f),
+     JointExpSpec(`elbow, 2, default-limits, `upper-arm, `fore-arm)
+     LinkExpSpec(`fore-arm, `elbow, `hand, 10.0f)])
+
+defn robot-arm (side:Symbol) -> Seqable<LinkExpSpec|JointExpSpec> :
+  defn nameit (base:Symbol) : symbol-join $ [side "-" base]
+  [ LinkExpSpec(nameit(`upper-arm), `torso, nameit(`elbow), 10.0f),
+    JointExpSpec(nameit(`elbow), 2, default-limits, nameit(`upper-arm), nameit(`fore-arm))
+    LinkExpSpec(nameit(`fore-arm), nameit(`elbow), nameit(`hand), 10.0f) ]
+
+defn robot-leg () -> Seqable<LinkExpSpec|JointExpSpec> :
+  [ LinkExpSpec(`ankle, `foot, `knee, 10.0f),
+    JointExpSpec(`knee, 2, default-limits, `ankle, `thigh)
+    LinkExpSpec(`thigh, `knee, `torso, 10.0f) ]
+
+val robot-simple-body-exp-spec =
+  KinematicsExpSpec(`foot,
+    cat-all $ [
+      robot-arm(`left)
+      robot-arm(`right)
+      robot-leg()
+      [ JointExpSpec(`left-hip, 2,  Box1f(-0.25f * PI-F, -0.25f * PI-F), `thigh, `left-upper-arm)
+        JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `thigh, `right-upper-arm) ]
+      ] )
+
+; defn robot-arm2 (side:Symbol) -> Seqable<LinkExpSpec|JointExpSpec> :
+;   defn nameit (base:Symbol) : symbol-join $ [side "-" base]
+;   [LinkExpSpec(nameit(`base),      `origin,    nameit(`torso), 2.0f)
+;    JointExpSpec(nameit(`torso), 1, default-limits, nameit(`base), nameit(`pivot)),
+;    LinkExpSpec(nameit(`pivot), nameit(`torso), nameit(`shoulder), 4.0f)
+;    JointExpSpec(nameit(`origin), 2, default-limits, nameit(`pivot), nameit(`upper-arm)),
+;    LinkExpSpec(nameit(`upper-arm), nameit(`shoulder), nameit(`elbow), 8.0f)
+;    JointExpSpec(nameit(`elbow), 2, default-limits, nameit(`upper-arm), nameit(`fore-arm)),
+;    LinkExpSpec(nameit(`fore-arm), nameit(`elbow),     nameit(`wrist), 4.0f),
+;    JointExpSpec(nameit(`wrist), 1, default-limits, nameit(`fore-arm), nameit(`hand)),
+;    LinkExpSpec(nameit(`hand), nameit(`wrist),     nameit(`finger), 2.0f),
+;    ]
+
+defn robot-arm2 (side:Symbol) -> Seqable<LinkExpSpec|JointExpSpec> :
+  defn nameit (base) : symbol-join $ [side "-" base]
+  [LinkExpSpec(nameit("L0"), `origin,      nameit("J0"), 2.0f)
+   JointExpSpec(nameit("J0"), 1, default-limits, nameit("L0"), nameit("L1")),
+   LinkExpSpec(nameit("L1"), nameit("J0"), nameit("J1"), 4.0f)
+   JointExpSpec(nameit("J1"), 2, default-limits, nameit("L1"), nameit("L2")),
+   LinkExpSpec(nameit("L2"), nameit("J1"), nameit("J2"), 8.0f)
+   JointExpSpec(nameit("J2"), 2, default-limits, nameit("L2"), nameit("L3")),
+   LinkExpSpec(nameit("L3"), nameit("J2"), nameit("J3"), 4.0f),
+   JointExpSpec(nameit("J3"), 1, default-limits, nameit("L3"), nameit("L4")),
+   LinkExpSpec(nameit("L4"), nameit("J3"), nameit(`tip), 2.0f),
+   ]
+
+val robot-simple-body-exp-spec2 =
+  KinematicsExpSpec(`bottom-tip,
+    cat-all $ [
+      robot-arm2(`left)
+      robot-arm2(`right)
+      robot-arm2(`bottom)
+      [ JointExpSpec(`left-hip, 2,  Box1f(-0.25f * PI-F, -0.25f * PI-F), `bottom-L0, `left-L0)
+        JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `bottom-L0, `right-L0) ]
+      ] )
+
+defn robot-arm3 (side:Symbol) -> Seqable<LinkExpSpec|JointExpSpec> :
+  defn nameit (base:Symbol) : symbol-join $ [side "-" base]
+  [LinkExpSpec(nameit(`base),      `origin,    nameit(`torso), 4.0f)
+   JointExpSpec(nameit(`torso), 1, default-limits, nameit(`base), nameit(`upper-arm)),
+   LinkExpSpec(nameit(`upper-arm), nameit(`torso), nameit(`elbow), 8.0f)
+   JointExpSpec(nameit(`elbow), 2, default-limits, nameit(`upper-arm), nameit(`fore-arm)),
+   LinkExpSpec(nameit(`fore-arm), nameit(`elbow),     nameit(`wrist), 8.0f),
+   JointExpSpec(nameit(`wrist), 1, default-limits, nameit(`fore-arm), nameit(`hand)),
+   LinkExpSpec(nameit(`hand), nameit(`wrist),     nameit(`finger), 4.0f),
+   ]
+
+val robot-simple-body-exp-spec3 =
+  KinematicsExpSpec(`bottom-finger,
+    cat-all $ [
+      robot-arm3(`left)
+      robot-arm3(`right)
+      robot-arm3(`bottom)
+      [ JointExpSpec(`left-hip, 2,  Box1f(-0.25f * PI-F, -0.25f * PI-F), `bottom-base, `left-base)
+        JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `bottom-base, `right-base) ]
+      ] )
+
+defn robot-arm4 (side:Symbol) -> Seqable<LinkExpSpec|JointExpSpec> :
+  defn nameit (base) : symbol-join $ [side "-" base]
+  [LinkExpSpec(nameit("L0"), `origin,      nameit("J0"), 2.0f)
+   JointExpSpec(nameit("J0"), 1, default-limits, nameit("L0"), nameit("L1")),
+   LinkExpSpec(nameit("L1"), nameit("J0"), nameit("J1"), 2.0f)
+   JointExpSpec(nameit("J1"), 2, default-limits, nameit("L1"), nameit("L2")),
+   LinkExpSpec(nameit("L2"), nameit("J1"), nameit("J2"), 4.0f)
+   JointExpSpec(nameit("J2"), 2, default-limits, nameit("L2"), nameit("L3")),
+   LinkExpSpec(nameit("L3"), nameit("J2"), nameit("J3"), 4.0f),
+   JointExpSpec(nameit("J3"), 2, default-limits, nameit("L3"), nameit("L4")),
+   LinkExpSpec(nameit("L4"), nameit("J3"), nameit("J4"), 2.0f),
+   JointExpSpec(nameit("J4"), 1, default-limits, nameit("L4"), nameit("L5")),
+   LinkExpSpec(nameit("L5"), nameit("J4"), nameit(`tip), 2.0f),
+   ]
+
+val robot-simple-body-exp-spec4 =
+  KinematicsExpSpec(`bottom-tip,
+    cat-all $ [
+      robot-arm4(`left)
+      robot-arm4(`right)
+      robot-arm4(`bottom)
+      [ JointExpSpec(`left-hip, 2,  Box1f(-0.25f * PI-F, -0.25f * PI-F), `bottom-L0, `left-L0)
+        JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `bottom-L0, `right-L0) ]
+      ] )
+
+defn robot-arm5 (nameit:(Symbol, Int) -> Symbol, links:Tuple<Float>, joints:Tuple<Int>) -> Seqable<LinkExpSpec|JointExpSpec> :
+  val res = to-tuple $ cat-all $ [
+    for (l in links, idx in 0 to false) seq :
+      LinkExpSpec(nameit(`l, idx), nameit(`j, idx), nameit(`j, idx + 1), l)
+    for (j in joints, idx in 1 to false) seq :
+      JointExpSpec(nameit(`j, idx), j, default-limits, nameit(`l, idx - 1), nameit(`l, idx))
+    ]
+  println(res)
+  res
+
+defn nameit (side:Symbol, kind:Symbol, idx:Int) :
+  if kind == `j and idx == 0 :
+    `origin
+  else :
+    symbol-join $ [side "-" kind idx]
+
+; val robot-simple-body-exp-spec5 =
+;   KinematicsExpSpec(`bottom-j6,
+;     cat-all $ [
+;       robot-arm5(nameit{`left, _, _},   [2.0f, 2.0f, 4.0f, 4.0f, 2.0f, 2.0f], [1, 2, 2, 2, 1])
+;       robot-arm5(nameit{`right, _, _},  [2.0f, 2.0f, 4.0f, 4.0f, 2.0f, 2.0f], [1, 2, 2, 2, 1])
+;       robot-arm5(nameit{`bottom, _, _}, [2.0f, 2.0f, 4.0f, 4.0f, 2.0f, 2.0f], [1, 2, 2, 2, 1])
+;       [ JointExpSpec(`left-hip,  2, Box1f(-0.25f * PI-F, -0.25f * PI-F), `bottom-l0, `left-l0)
+;         JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `bottom-l0, `right-l0) ]
+;       ] )
+
+val robot-simple-body-exp-spec5 =
+  KinematicsExpSpec(`bottom-j6,
+  ; KinematicsExpSpec(`bottom-j5,
+    cat-all $ [
+      robot-arm5(nameit{`left, _, _},   [2.0f, 2.0f, 4.0f, 4.0f], [1, 2, 2])
+      robot-arm5(nameit{`right, _, _},  [2.0f, 2.0f, 4.0f, 4.0f], [1, 2, 2])
+      robot-arm5(nameit{`bottom, _, _}, [2.0f, 2.0f, 4.0f, 4.0f, 2.0f, 2.0f], [1, 2, 2, 2, 1])
+      ; robot-arm5(nameit{`bottom, _, _}, [2.0f, 4.0f, 4.0f, 2.0f, 2.0f], [1, 2, 2, 1])
+      [ JointExpSpec(`left-hip,  2, Box1f(-0.25f * PI-F, -0.25f * PI-F), `bottom-l0, `left-l0)
+        JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `bottom-l0, `right-l0) ]
+      ] )
+
+; val robot-simple-body-exp-spec5 = 
+;   KinematicsExpSpec(`bottom-j2,
+;     cat-all $ [
+;       robot-arm5(nameit{`left, _, _}, [2.0f, 2.0f], [2])
+;       robot-arm5(nameit{`right, _, _}, [2.0f, 2.0f], [2])
+;       robot-arm5(nameit{`bottom, _, _}, [2.0f, 2.0f], [2])
+;       [ JointExpSpec(`left-hip,  2, Box1f(-0.25f * PI-F, -0.25f * PI-F), `bottom-l0, `left-l0)
+;         JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `bottom-l0, `right-l0) ]
+;       ] )
+
+; val robot-body-exp-spec =
+;   KinematicsExpSpec(
+;     `foot,
+;     [LinkExpSpec(`ankle, `foot, `knee, 10.0f), LinkExpSpec(`thigh, `knee, `dick, 10.0f),
+;      LinkExpSpec(`center-torso, `dick, `torso, 5.0f),
+;      LinkExpSpec(`left-torso, `torso, `left-shoulder, 5.0f),
+;      LinkExpSpec(`right-torso, `torso, `right-shoulder, 5.0f)
+; 
+;      LinkExpSpec(`left-upper-arm, `left-shoulder, `left-elbow, 10.0f), LinkExpSpec(`left-fore-arm, `left-elbow, `left-hand, 10.0f), ,
+;      LinkExpSpec(`right-upper-arm, `right-shoulder, `right-elbow, 10.0f), LinkExpSpec(`right-fore-arm, `right-elbow, `right-hand, 10.0f),
+;
+;     [JointExpSpec(`left-elbow, 2, false, `left-upper-arm, `left-fore-arm)
+;      JointExpSpec(`right-elbow, 2, false, `right-upper-arm, `right-fore-arm)
+;      JointExpSpec(`knee, 2, false, `ankle, `thigh)
+;      ])
+
+defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
+  val time = SymVar(`time, 0.0f, false, false)
+  val m =
+    switch(top-name) :
+      "robot-arm0" : KinematicsBody(`main, robot-arm-spec0)
+      "robot-arm" : KinematicsBody(`main, robot-arm-spec)
+      "robot-arm-exp" : KinematicsExpBody(`main, robot-arm-exp-spec)
+      "robot-arm-exp2" : KinematicsExpBody(`main, robot-arm-exp-spec2)
+      "robot-arm-exp3" : KinematicsExpBody(`main, robot-arm-exp-spec3)
+      "open-manipulator-x" : KinematicsExpBody(`main, open-manipulator-x-spec)
+      "simple-robot-exp" : KinematicsExpBody(`main, robot-simple-body-exp-spec)
+      "simple-robot-exp2" : KinematicsExpBody(`main, robot-simple-body-exp-spec2)
+      "robot-leg-arm" : KinematicsExpBody(`main, robot-leg-arm-exp-spec)
+      "robot-leg" : KinematicsBody(`main, robot-leg-spec)
+      "kinematics" : KinematicsExpBody2(`main)
+      ; "time-kinematics" : TimeKinematics(`main, x-0, time)
+      ; "time-exp-kinematics" : TimeExpKinematics(`main, x-0, time, robot-arm-exp-spec3, `finger)
+      ; "time-exp-kinematics-real" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec2, `right-tip)
+      ; "time-exp-kinematics-real3" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec3, `right-finger)
+      ; "time-exp-kinematics-real4" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec4, `right-tip)
+      "time-dancer-square" :
+        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
+      "time-dancer-cube" :
+        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 8.0f)
+        TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
+      "time-dancer-uing" :
+        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
+        TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
+      "time-dancer-rnd" :
+        val path = Particle(`particle, x-0, x-1)
+        TimeExpKinematicsPathCenter(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
+      "time-dancer-seq" :
+        val path1 = PolyLinePath(`path1, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        val path2 = PolyLinePath(`path2, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 6.0f)
+        val paths = [20.0f => path1, 20.0f => path2]
+        TimeExpKinematicsPaths(`main, x-0, time, robot-simple-body-exp-spec5, paths, `right-j4)
+      "time-dancer-uing-wrist" :
+        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
+        TimeExpKinematicsPathWrist(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4, `right-l3)
+      "time-dancer-uing-straight" :
+        val path = PolyLinePath(`path, mag(xyz(x-0)) $ round-you, 8.0f)
+        TimeExpKinematicsPathStraight(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4, `right)
+      "time-dancer-uing-straighten" :
+        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
+        TimeExpKinematicsPathStraighten(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
+      "time-dancer-uing-mirror" :
+        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
+        TimeExpKinematicsMirror(`main, x-0, time, robot-simple-body-exp-spec5, path, `left-j4, `right-j4)
+      "time-dancer-uing-reflect" :
+        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
+        TimeExpKinematicsReflect(`main, x-0, time, robot-simple-body-exp-spec5, path, `left-j4, `right-j4)
+      "time-dancer-uing-circle" :
+        val path = PolyLinePath(`path, mov-z(2.0f) $ mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
+        TimeExpKinematicsCircle(`main, x-0, time, robot-simple-body-exp-spec5, path, `left-j4, `right-j4)
+      "time-dancer-bounce" :
+        TimeExpKinematicsBounce(`main, x-0, time, robot-simple-body-exp-spec5, `left-j4, `right-j4)
+      ; "time-leg" : TimeLeg(`main, x-0, time)
+      else : LineBody(`line, 7.0f)
+
+  ; println("RUNNING MODULE...")
+
+  run-module(m, time)  
+
+defn demo (top-name:String) :
+  demo(top-name, top-n-0, top-n-1, top-n-2, top-x-0, top-x-1)
+
+defn main () :
+  parse-args(screen-props, command-line-arguments())
+  RANDOM = Random(current-time-us() when (top-seed < 0) else to-long(top-seed))
+  demo(top-name)  
+
+main()

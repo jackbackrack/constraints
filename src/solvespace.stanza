@@ -1,0 +1,657 @@
+defpackage solvespace :
+  import core
+  import collections
+  import geom/geom
+  import geom/vec
+  import geom/line-segment
+  import geom/polyline
+  import geom/circle with:
+    prefix(Circle) => geom-
+
+val SLVS_FREE_IN_3D                 = 0
+val SLVS_E_POINT_IN_3D              = 50000
+val SLVS_E_POINT_IN_2D              = 50001
+val SLVS_E_NORMAL_IN_3D             = 60000
+val SLVS_E_NORMAL_IN_2D             = 60001
+val SLVS_E_DISTANCE                 = 70000
+val SLVS_E_WORKPLANE                = 80000
+val SLVS_E_LINE_SEGMENT             = 80001
+val SLVS_E_CUBIC                    = 80002
+val SLVS_E_CIRCLE                   = 80003
+val SLVS_E_ARC_OF_CIRCLE            = 80004
+val SLVS_C_POINTS_COINCIDENT        = 100000
+val SLVS_C_PT_PT_DISTANCE           = 100001
+val SLVS_C_PT_PLANE_DISTANCE        = 100002
+val SLVS_C_PT_LINE_DISTANCE         = 100003
+val SLVS_C_PT_FACE_DISTANCE         = 100004
+val SLVS_C_PT_IN_PLANE              = 100005
+val SLVS_C_PT_ON_LINE               = 100006
+val SLVS_C_PT_ON_FACE               = 100007
+val SLVS_C_EQUAL_LENGTH_LINES       = 100008
+val SLVS_C_LENGTH_RATIO             = 100009
+val SLVS_C_EQ_LEN_PT_LINE_D         = 100010
+val SLVS_C_EQ_PT_LN_DISTANCES       = 100011
+val SLVS_C_EQUAL_ANGLE              = 100012
+val SLVS_C_EQUAL_LINE_ARC_LEN       = 100013
+val SLVS_C_SYMMETRIC                = 100014
+val SLVS_C_SYMMETRIC_HORIZ          = 100015
+val SLVS_C_SYMMETRIC_VERT           = 100016
+val SLVS_C_SYMMETRIC_LINE           = 100017
+val SLVS_C_AT_MIDPOINT              = 100018
+val SLVS_C_HORIZONTAL               = 100019
+val SLVS_C_VERTICAL                 = 100020
+val SLVS_C_DIAMETER                 = 100021
+val SLVS_C_PT_ON_CIRCLE             = 100022
+val SLVS_C_SAME_ORIENTATION         = 100023
+val SLVS_C_ANGLE                    = 100024
+val SLVS_C_PARALLEL                 = 100025
+val SLVS_C_PERPENDICULAR            = 100026
+val SLVS_C_ARC_LINE_TANGENT         = 100027
+val SLVS_C_CUBIC_LINE_TANGENT       = 100028
+val SLVS_C_EQUAL_RADIUS             = 100029
+val SLVS_C_PROJ_PT_DISTANCE         = 100030
+val SLVS_C_WHERE_DRAGGED            = 100031
+val SLVS_C_CURVE_CURVE_TANGENT      = 100032
+val SLVS_C_LENGTH_DIFFERENCE        = 100033
+public val SLVS_RESULT_OKAY                = 0
+public val SLVS_RESULT_INCONSISTENT        = 1
+public val SLVS_RESULT_DIDNT_CONVERGE      = 2
+public val SLVS_RESULT_TOO_MANY_UNKNOWNS   = 3
+
+val ids = to-seq(1 to false)
+
+; extern Slvs_set_dragged : (ptr<System>, int) -> int
+; extern Slvs_get_calculateFaileds : (ptr<System>) -> int
+; extern Slvs_get_failed : (ptr<System>, int) -> int
+; extern Slvs_get_num_failed : (ptr<System>) -> int
+
+; lostanza deftype Slvs_hParam
+; lostanza deftype Slvs_hEntity
+; lostanza deftype Slvs_hConstraint
+; lostanza deftype Slvs_hGroup
+lostanza deftype Slvs_System
+
+extern printf: (ptr<byte>, ? ...) -> int
+
+
+extern Slvs_Solve : (ptr<Slvs_System>, int) -> int
+
+extern Slvs_QuaternionU : (double, double, double, double, ptr<double>, ptr<double>, ptr<double>) -> int
+extern Slvs_QuaternionV : (double, double, double, double, ptr<double>, ptr<double>, ptr<double>) -> int
+extern Slvs_QuaternionN : (double, double, double, double, ptr<double>, ptr<double>, ptr<double>) -> int
+extern Slvs_MakeQuaternion : (double, double, double, double, double, double, ptr<double>, ptr<double>, ptr<double>, ptr<double>) -> int
+
+extern Slvs_Make_System : (int) -> ptr<Slvs_System>
+
+extern Slvs_System_DOF : (ptr<Slvs_System>) -> int
+extern Slvs_System_Result : (ptr<Slvs_System>) -> int
+extern Slvs_System_Set_Calculate_Faileds : (ptr<Slvs_System>, int) -> int
+extern Slvs_System_Set_Dragged : (ptr<Slvs_System>, int, int) -> int
+
+extern Slvs_Add_Param : (ptr<Slvs_System>, int, int, double) -> int
+extern Slvs_Param_Get_Value : (ptr<Slvs_System>, int) -> double
+extern Slvs_Param_Set_Value : (ptr<Slvs_System>, int, double) -> int
+extern Slvs_Add_Point2d : (ptr<Slvs_System>, int, int, int, int, int) -> int
+extern Slvs_Add_Point3d : (ptr<Slvs_System>, int, int, int, int, int) -> int
+extern Slvs_Add_Normal3d : (ptr<Slvs_System>, int, int, int, int, int, int) -> int
+extern Slvs_Add_Normal2d : (ptr<Slvs_System>, int, int, int) -> int
+extern Slvs_Add_Distance : (ptr<Slvs_System>, int, int, int, int) -> int
+extern Slvs_Add_LineSegment : (ptr<Slvs_System>, int, int, int, int, int) -> int
+extern Slvs_Add_Cubic : (ptr<Slvs_System>, int, int, int, int, int, int, int) -> int
+extern Slvs_Add_ArcOfCircle : (ptr<Slvs_System>, int, int, int, int, int, int, int) -> int
+extern Slvs_Add_Circle : (ptr<Slvs_System>, int, int, int, int, int, int) -> int
+extern Slvs_Add_Workplane : (ptr<Slvs_System>, int, int, int, int) -> int
+extern Slvs_Add_Constraint : (ptr<Slvs_System>, int, int, int, int, double, int, int, int, int) -> int
+
+public lostanza deftype System :
+  value : ptr<Slvs_System>
+
+public lostanza defn System (num:ref<Int>) -> ref<System> :
+  val res = call-c Slvs_Make_System(num.value)
+  return new System{res}
+
+public lostanza defn dof (sys:ref<System>) -> ref<Int> :
+  return new Int{call-c Slvs_System_DOF(sys.value)}
+
+public lostanza defn result (sys:ref<System>) -> ref<Int> :
+  return new Int{call-c Slvs_System_Result(sys.value)}
+
+public lostanza defn set-calculate-faileds (sys:ref<System>, idx:ref<Int>) -> ref<False> :
+  call-c Slvs_System_Set_Calculate_Faileds(sys.value, idx.value)
+  return false
+
+lostanza defn set-dragged (sys:ref<System>, idx:ref<Int>, num:ref<Int>) -> ref<False> :
+  call-c Slvs_System_Set_Dragged(sys.value, idx.value, num.value)
+  return false
+
+public defn set-dragged (sys:System, idx:Int, param:Param) :
+  set-dragged(sys, idx, id(param))
+
+public defn set-dragged (sys:System, pt:Point2) :
+  set-dragged(sys, 0, u(pt))
+  set-dragged(sys, 1, v(pt))
+  set-dragged(sys, 2, 0)
+  set-dragged(sys, 3, 0)
+
+public defn set-dragged (sys:System, pt:Point3) :
+  set-dragged(sys, 0, x-p(pt))
+  set-dragged(sys, 1, y-p(pt))
+  set-dragged(sys, 2, z-p(pt))
+  set-dragged(sys, 3, 0)
+
+public lostanza defn solve (sys:ref<System>, group:ref<Group>) -> ref<Int> :
+  val res = call-c Slvs_Solve(sys.value, id(group).value)
+  return new Int{res}
+
+public defstruct Group :
+  id : Int
+  system : System
+
+public defn Group (system:System) :
+  val nid = next(ids)
+  println("GROUP %_" % [nid])
+  Group(nid, system)
+
+public var *group*:False|Group = false
+
+public defn group! () : *group* as Group
+
+public defn with-group (f:() -> ?, group:Group) :
+  let-var *group* = group :
+    f()
+
+public defstruct Param :
+  id : Int
+  group : Group
+with:
+  constructor => #Param
+
+public lostanza defn Param (group:ref<Group>, value:ref<Double>) -> ref<Param> :
+  val nid = next(ids)
+  call-c printf("PARAM %d GROUP %d\n", nid.value, id(group).value)
+  call-c Slvs_Add_Param(system(group).value, nid.value, id(group).value, value.value)
+  return #Param(nid, group)
+
+public defn Param (value:Double) -> Param :
+  Param(group!(), value)
+
+public lostanza defn get-value (param:ref<Param>) -> ref<Double> :
+  return new Double{call-c Slvs_Param_Get_Value(system(group(param)).value, id(param).value)}
+
+public lostanza defn set-value (param:ref<Param>, value:Double) -> ref<False> :
+  call-c Slvs_Param_Set_Value(system(group(param)).value, id(param).value, value.value)
+  return false
+
+public deftype SolveGeom
+public defmulti to-geom (g:SolveGeom) -> Geom
+
+public defstruct SolveGeomGroup <: SolveGeom :
+  elts : Tuple<SolveGeom>
+
+defmethod to-geom (g:SolveGeomGroup) :
+  GeomGroup $ to-tuple $ seq(to-geom, elts(g))
+
+public deftype Entity <: SolveGeom
+public defmulti id (e:Entity) -> Int
+public defmulti group (e:Entity) -> Group
+public defn system (e:Entity) : system(group(e))
+
+public defstruct FreeIn3D <: Entity :
+  id : Int with: ( as-method => true )
+
+public val FREE-IN-3D = FreeIn3D(0)
+
+public defstruct WorkPlane <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  origin : Point3
+  normal : Normal3
+with:
+  constructor => #WorkPlane
+
+public lostanza defn WorkPlane (group:ref<Group>, origin:ref<Point3>, normal:ref<Normal3>) -> ref<WorkPlane> :
+  val nid = next(ids)
+  call-c printf("WORKPLANE %d\n", nid.value)
+  call-c Slvs_Add_Workplane(system(group).value, nid.value, id(group).value, id(origin).value, id(normal).value)
+  return #WorkPlane(nid, group, origin, normal)
+
+public defn WorkPlane (origin:Point3, normal:Normal3) -> WorkPlane :
+  WorkPlane(group!(), origin, normal)
+
+public var *workplane*:False|WorkPlane = false
+
+public defn workplane! () : *workplane* as WorkPlane
+
+public defn with-workplane (f:() -> ?, workplane:WorkPlane) :
+  let-var *workplane* = workplane :
+    f()
+
+public defstruct Point2 <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  u : Param
+  v : Param
+with:
+  constructor => #Point2
+
+public defn get-value (p:Point2) -> V2f :
+  V2f(get-value(u(p)), get-value(v(p)))
+
+defmethod to-geom (p:Point2) -> V2f : get-value(p)
+
+public lostanza defn Point2 (group:ref<Group>, workplane:ref<WorkPlane>, u:ref<Param>, v:ref<Param>) -> ref<Point2> :
+  val nid = next(ids)
+  call-c printf("POINT2d %d\n", nid.value)
+  call-c Slvs_Add_Point2d(system(group).value, nid.value, id(group).value, id(workplane).value, id(u).value, id(v).value)
+  return #Point2(nid, group, workplane, u, v)
+
+public defn Point2 (u:Param, v:Param) -> Point2 :
+  Point2(group!(), workplane!(), u, v)
+
+public defn Point2 (u:Double, v:Double) -> Point2 :
+  Point2(Param(u), Param(v))
+
+public defn Point2 (v:V2d) -> Point2 :
+  Point2(Param(x(v)), Param(y(v)))
+
+public defstruct Point3 <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  x-p : Param
+  y-p : Param
+  z-p : Param
+with:
+  constructor => #Point3
+
+public defn workplane (p:Point3) : FREE-IN-3D
+
+public defn get-value (p:Point3) -> V3f :
+  V3f(to-float $ get-value(x-p(p)), to-float $ get-value(y-p(p)), to-float $ get-value(z-p(p)))
+
+defmethod to-geom (p:Point3) -> V3f : get-value(p)
+
+public lostanza defn Point3 (group:ref<Group>, x-p:ref<Param>, y-p:ref<Param>, z-p:ref<Param>) -> ref<Point3> :
+  val nid = next(ids)
+  call-c printf("POINT3d %d\n", nid.value)
+  call-c Slvs_Add_Point3d(system(group).value, nid.value, id(group).value, id(x-p).value, id(y-p).value, , id(z-p).value)
+  return #Point3(nid, group, x-p, y-p, z-p)
+
+public defn Point3 (x:Param, y:Param, z:Param) -> Point3 :
+  Point3(group!(), x, y, z)
+
+public defn Point3 (x:Double, y:Double, z:Double) -> Point3 :
+  Point3(Param(x), Param(y), Param(z))
+
+public defn Point3 (v:V3d) -> Point3 :
+  Point3(Param(x(v)), Param(y(v)), Param(z(v)))
+
+public defn Point3 (p:Point2) -> Point3 :
+  Point3(get-value(u(p)), get-value(v(p)), 0.0)
+
+public defstruct Normal3 <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  qw : Param
+  qx : Param
+  qy : Param
+  qz : Param
+with:
+  constructor => #Normal3
+
+public lostanza defn Normal3 (group:ref<Group>, qw:ref<Param>, qx:ref<Param>, qy:ref<Param>, qz:ref<Param>) -> ref<Normal3> :
+  val nid = next(ids)
+  call-c printf("NORMAL3d %d GROUP %d\n", nid.value, id(group).value)
+  call-c Slvs_Add_Normal3d(system(group).value, nid.value, id(group).value, id(qw).value, id(qx).value, id(qy).value, , id(qz).value)
+  return #Normal3(nid, group, qw, qx, qy, qz)
+
+public defn Normal3 (qw:Param, qx:Param, qy:Param, qz:Param) -> Normal3 :
+  Normal3(group!(), qw, qx, qy, qz)
+
+public defn Normal3 (qw:Double, qx:Double, qy:Double, qz:Double) -> Normal3 :
+  Normal3(Param(qw), Param(qx), Param(qy), Param(qz))
+
+lostanza var nqw:double = 0.0
+lostanza var nqx:double = 0.0
+lostanza var nqy:double = 0.0
+lostanza var nqz:double = 0.0
+
+public lostanza defn Normal3 (u:ref<V3d>, v:ref<V3d>) -> ref<Normal3> :
+  call-c Slvs_MakeQuaternion(x(u).value, y(u).value, z(u).value, x(v).value, y(v).value, z(v).value, addr!(nqw), addr!(nqx), addr!(nqy), addr!(nqz))
+  return Normal3(new Double{nqw}, new Double{nqx}, new Double{nqy}, new Double{nqz})
+
+public defstruct Normal2d <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+with:
+  constructor => #Normal2d
+
+public lostanza defn Normal2d (group:ref<Group>, workplane:ref<WorkPlane>) -> ref<Normal2d> :
+  val nid = next(ids)
+  call-c printf("NORMAL2d %d GROUP %d PLANE %d\n", nid.value, id(group).value, id(workplane).value)
+  call-c Slvs_Add_Normal2d(system(group).value, nid.value, id(group).value, id(workplane).value)
+  return #Normal2d(nid, group, workplane)
+
+public defn Normal2d () :
+  Normal2d(group!(), workplane!())
+
+public defstruct LineSegment2 <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  p0 : Point2
+  p1 : Point2
+with:
+  constructor => #LineSegment2
+
+public lostanza defn LineSegment2 (group:ref<Group>, workplane:ref<WorkPlane>, p0:ref<Point2>, p1:ref<Point2>) -> ref<LineSegment2> :
+  val nid = next(ids)
+  call-c printf("LINESEGMENT %d GROUP %d WORKPLANE %d\n", nid.value, id(group).value, id(workplane).value)
+  call-c Slvs_Add_LineSegment(system(group).value, nid.value, id(group).value, id(workplane).value, id(p0).value, id(p1).value)
+  return #LineSegment2(nid, group, workplane, p0, p1)
+
+public defn LineSegment2 (p0:Point2, p1:Point2) -> LineSegment2 :
+  LineSegment2(group!(), workplane!(), p0, p1)
+
+public defn get-value (e:LineSegment2) -> LineSegment2f :
+  LineSegment2f(get-value(p0(e)), get-value(p1(e)))
+
+defmethod to-geom (p:LineSegment2) -> LineSegment2f : get-value(p)
+
+public defn to-polyline2f (lss:Seqable<LineSegment2>) -> PolyLine2f :
+  PolyLine2f $ to-tuple $ for ls in lss seq :
+    [get-value(p0(ls)), get-value(p1(ls))]
+
+public deftype Lines2 <: SolveGeom
+public defmulti points (ls:Lines2) -> Tuple<Point2>
+public defmulti segments (ls:Lines2) -> Tuple<LineSegment2>
+
+public defn get-value (ls:Lines2) -> PolyLine2f :
+  to-polyline2f $ segments(ls)
+
+defmethod to-geom (ls:Lines2) -> PolyLine2f : get-value(ls)
+
+public defstruct LineSegment3 <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : FreeIn3D|WorkPlane
+  p0 : Point3
+  p1 : Point3
+with:
+  constructor => #LineSegment3
+
+public lostanza defn LineSegment3 (group:ref<Group>, workplane:ref<FreeIn3D|WorkPlane>, p0:ref<Point3>, p1:ref<Point3>) -> ref<LineSegment3> :
+  val nid = next(ids)
+  call-c printf("LINESEGMENT3 %d GROUP %d WORKPLANE %d\n", nid.value, id(group).value, id(workplane).value)
+  call-c Slvs_Add_LineSegment(system(group).value, nid.value, id(group).value, id(workplane).value, id(p0).value, id(p1).value)
+  return #LineSegment3(nid, group, workplane, p0, p1)
+
+public defn LineSegment3 (p0:Point3, p1:Point3) -> LineSegment3 :
+  ; LineSegment3(group!(), workplane!(), p0, p1)
+  LineSegment3(group!(), FREE-IN-3D, p0, p1)
+
+public defn get-value (e:LineSegment3) -> LineSegment3f :
+  LineSegment3f(get-value(p0(e)), get-value(p1(e)))
+
+defmethod to-geom (p:LineSegment3) -> LineSegment3f : get-value(p)
+
+public defn to-polyline3f (lss:Seqable<LineSegment3>) -> PolyLine3f :
+  PolyLine3f $ to-tuple $ for ls in lss seq :
+    [get-value(p0(ls)), get-value(p1(ls))]
+
+public deftype Lines3 <: SolveGeom
+public defmulti points (ls:Lines3) -> Tuple<Point3>
+public defmulti segments (ls:Lines3) -> Tuple<LineSegment3>
+
+public defn get-value (ls:Lines3) -> PolyLine3f :
+  to-polyline3f $ segments(ls)
+
+defmethod to-geom (ls:Lines3) -> PolyLine3f : get-value(ls)
+
+public defstruct Circle <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  normal : Normal3
+  center : Point2
+  radius : Distance
+with:
+  constructor => #Circle
+  
+public lostanza defn Circle (group:ref<Group>, workplane:ref<WorkPlane>, normal:ref<Normal3>, center:ref<Point2>, radius:ref<Distance>) -> ref<Circle> :
+  val nid = next(ids)
+  call-c printf("CIRCLE %d\n", nid.value)
+  call-c Slvs_Add_Circle(system(group).value, nid.value, id(group).value, id(workplane).value, id(center).value, id(normal).value, id(radius).value)
+  return #Circle(nid, group, workplane, normal, center, radius)
+
+public defn Circle (normal:Normal3, center:Point2, radius:Distance) -> Circle :
+  Circle(group!(), workplane!(), normal, center, radius)
+
+public defn Circle (center:Point2, radius:Distance) -> Circle :
+  Circle(normal(workplane!()), center, radius)
+
+public defn get-value (c:Circle) -> geom-Circle :
+  geom-Circle(get-value(center(c)), to-float(2.0 * get-value(radius(c))))
+
+defmethod to-geom (c:Circle) -> geom-Circle : get-value(c)
+
+public defstruct CircleArc <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  normal : Normal3
+  center : Point2
+  start : Point2
+  end : Point2
+with:
+  constructor => #CircleArc
+  
+public lostanza defn CircleArc (group:ref<Group>, workplane:ref<WorkPlane>, normal:ref<Normal3>, center:ref<Point2>, start:ref<Point2>, end:ref<Point2>) -> ref<CircleArc> :
+  val nid = next(ids)
+  call-c printf("CIRCLEARC %d\n", nid.value)
+  call-c Slvs_Add_ArcOfCircle(system(group).value, nid.value, id(group).value, id(workplane).value, id(normal).value, id(center).value, id(start).value, id(end).value)
+  return #CircleArc(nid, group, workplane, normal, center, start, end)
+
+public defn CircleArc (normal:Normal3, center:Point2, start:Point2, end:Point2) -> CircleArc :
+  CircleArc(group!(), workplane!(), normal, center, start, end)
+
+public defn CircleArc (center:Point2, start:Point2, end:Point2) -> CircleArc :
+  CircleArc(normal(workplane!()), center, start, end)
+
+public defstruct Distance <: Entity :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  d : Param
+with:
+  constructor => #Distance
+  
+public defn get-value (x:Distance) -> Double :
+  get-value(d(x))
+
+public lostanza defn Distance (group:ref<Group>, workplane:ref<WorkPlane>, d:ref<Param>) -> ref<Distance>:
+  val nid = next(ids)
+  call-c printf("DISTANCE %d\n", nid.value)
+  call-c Slvs_Add_Distance(system(group).value, nid.value, id(group).value, id(workplane).value, id(d).value)
+  return #Distance(nid, group, workplane, d)
+
+public defn Distance (d:Param) -> Distance :
+  Distance(group!(), workplane!(), d)
+
+public defn Distance (d:Double) -> Distance :
+  Distance(Param(d))
+
+public deftype Constraint
+public defmulti id (constraint:Constraint) -> Int
+public defmulti group (constraint:Constraint) -> Group
+
+public defstruct PointsCoincidentConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : FreeIn3D|WorkPlane
+  p0 : Point2|Point3
+  p1 : Point2|Point3
+with:
+  constructor => #PointsCoincidentConstraint
+
+public lostanza defn PointsCoincidentConstraint (p0:ref<Point2|Point3>, p1:ref<Point2|Point3>) -> ref<PointsCoincidentConstraint> :
+  val nid = next(ids)
+  call-c printf("PC CONSTRAINT %d GROUP %d WP %d P0 %d P1 %d\n", nid.value, id(group(p0)).value, id(workplane(p0)).value, id(p0).value, id(p1).value)
+  call-c Slvs_Add_Constraint(system(p0).value, nid.value, id(group(p0)).value, SLVS_C_POINTS_COINCIDENT.value, id(workplane(p0)).value, 0.0, id(p0).value, id(p1).value, 0, 0)
+  return #PointsCoincidentConstraint(nid, group(p0), workplane(p0), p0, p1)
+
+public defstruct PointPointDistanceConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : FreeIn3D|WorkPlane
+  value : Double
+  p0 : Point2|Point3
+  p1 : Point2|Point3
+with:
+  constructor => #PointPointDistanceConstraint
+
+public lostanza defn PointPointDistanceConstraint (value:ref<Double>, p0:ref<Point2|Point3>, p1:ref<Point2|Point3>) -> ref<PointPointDistanceConstraint> :
+  val nid = next(ids)
+  call-c printf("PPD CONSTRAINT %d GROUP %d WP %d P0 %d P1 %d\n", nid.value, id(group(p0)).value, id(workplane(p0)).value, id(p0).value, id(p1).value)
+  call-c Slvs_Add_Constraint(system(p0).value, nid.value, id(group(p0)).value, SLVS_C_PT_PT_DISTANCE.value, id(workplane(p0)).value, value.value, id(p0).value, id(p1).value, 0, 0)
+  return #PointPointDistanceConstraint(nid, group(p0), workplane(p0), value, p0, p1)
+
+public defn PointPointDistanceConstraint (value:Double, line:LineSegment2) :
+  PointPointDistanceConstraint(value, p0(line), p1(line))
+
+public defn PointPointDistanceConstraint (value:Double, line:LineSegment3) :
+  PointPointDistanceConstraint(value, p0(line), p1(line))
+
+public defstruct PointLineDistanceConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane|FreeIn3D
+  value : Double
+  p : Point2|Point3
+  l : LineSegment2|LineSegment3
+with:
+  constructor => #PointLineDistanceConstraint
+
+public lostanza defn PointLineDistanceConstraint (value:ref<Double>, p:ref<Point2|Point3>, l:ref<LineSegment2|LineSegment3>) -> ref<PointLineDistanceConstraint> :
+  val nid = next(ids)
+  call-c printf("PLD CONSTRAINT %d\n", nid.value)
+  call-c Slvs_Add_Constraint(system(p).value, nid.value, id(group(p)).value, SLVS_C_PT_LINE_DISTANCE.value, id(workplane(l)).value, value.value, id(p).value, 0, id(l).value, 0)
+  return #PointLineDistanceConstraint(nid, group(p), workplane(l), value, p, l)
+
+public defstruct PointOnLineConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane|FreeIn3D
+  p : Point2|Point3
+  l : LineSegment2|LineSegment3
+with:
+  constructor => #PointOnLineConstraint
+
+public lostanza defn PointOnLineConstraint (p:ref<Point2|Point3>, l:ref<LineSegment2|LineSegment3>) -> ref<PointOnLineConstraint> :
+  val nid = next(ids)
+  call-c printf("POL CONSTRAINT %d\n", nid.value)
+  call-c Slvs_Add_Constraint(system(p).value, nid.value, id(group(p)).value, SLVS_C_PT_ON_LINE.value, id(workplane(l)).value, 0.0, id(p).value, 0, id(l).value, 0)
+  return #PointOnLineConstraint(nid, group(p), workplane(l), p, l)
+
+public defstruct PointInPlaneConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  p : Point3
+with:
+  constructor => #PointInPlaneConstraint
+
+public lostanza defn PointInPlaneConstraint (p:ref<Point3>, plane:ref<WorkPlane>) -> ref<PointInPlaneConstraint> :
+  val nid = next(ids)
+  call-c printf("POP CONSTRAINT %d\n", nid.value)
+  call-c Slvs_Add_Constraint(system(p).value, nid.value, id(group(p)).value, SLVS_C_PT_IN_PLANE.value, id(plane).value, 0.0, id(p).value, 0, id(plane).value, 0)
+  return #PointInPlaneConstraint(nid, group(p), plane, p)
+
+public defstruct DiameterConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  value : Double
+  c : Circle|CircleArc
+with:
+  constructor => #DiameterConstraint
+
+public lostanza defn DiameterConstraint (value:ref<Double>, c:ref<Circle|CircleArc>) -> ref<DiameterConstraint> :
+  val nid = next(ids)
+  call-c Slvs_Add_Constraint(system(c).value, nid.value, id(group(c)).value, SLVS_C_DIAMETER.value, id(workplane(c)).value, value.value, 0, 0, id(c).value, 0)
+  return #DiameterConstraint(nid, group(c), workplane(c), value, c)
+
+public defstruct AngleConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : FreeIn3D|WorkPlane
+  value : Double
+  l0 : LineSegment2|LineSegment3
+  l1 : LineSegment2|LineSegment3
+with:
+  constructor => #AngleConstraint
+
+public lostanza defn AngleConstraint (value:ref<Double>, l0:ref<LineSegment2|LineSegment3>, l1:ref<LineSegment2|LineSegment3>) -> ref<AngleConstraint> :
+  val nid = next(ids)
+  call-c Slvs_Add_Constraint(system(l0).value, nid.value, id(group(l0)).value, SLVS_C_ANGLE.value, id(workplane(l0)).value, value.value, 0, 0, id(l0).value, id(l1).value)
+  return #AngleConstraint(nid, group(l0), workplane(l0), value, l0, l1)
+
+public defstruct VerticalConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  linesegment2 : LineSegment2
+with:
+  constructor => #VerticalConstraint
+
+public lostanza defn VerticalConstraint (l:ref<LineSegment2>) -> ref<VerticalConstraint> :
+  val nid = next(ids)
+  call-c printf("VERT CONSTRAINT %d\n", nid.value)
+  call-c Slvs_Add_Constraint(system(l).value, nid.value, id(group(l)).value, SLVS_C_VERTICAL.value, id(workplane(l)).value, 0.0, 0, 0, id(l).value, 0)
+  return #VerticalConstraint(nid, group(l), workplane(l), l)
+
+public defstruct HorizontalConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  linesegment2 : LineSegment2
+with:
+  constructor => #HorizontalConstraint
+
+public lostanza defn HorizontalConstraint (l:ref<LineSegment2>) -> ref<HorizontalConstraint> :
+  val nid = next(ids)
+  call-c printf("HORIZ CONSTRAINT %d\n", nid.value)
+  call-c Slvs_Add_Constraint(system(l).value, nid.value, id(group(l)).value, SLVS_C_HORIZONTAL.value, id(workplane(l)).value, 0.0, 0, 0, id(l).value, 0)
+  return #HorizontalConstraint(nid, group(l), workplane(l), l)
+
+public defstruct EqualRadiusConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane
+  c0 : Circle|CircleArc
+  c1 : Circle|CircleArc
+with:
+  constructor => #EqualRadiusConstraint
+
+public lostanza defn EqualRadiusConstraint (c0:ref<Circle|CircleArc>, c1:ref<Circle|CircleArc>) -> ref<EqualRadiusConstraint> :
+  val nid = next(ids)
+  call-c printf("EQRAD CONSTRAINT %d\n", nid.value)
+  call-c Slvs_Add_Constraint(system(c0).value, nid.value, id(group(c0)).value, SLVS_C_EQUAL_RADIUS.value, id(workplane(c0)).value, 0.0, 0, 0, id(c0).value, id(c1).value)
+  return #EqualRadiusConstraint(nid, group(c0), workplane(c0), c0, c1)
+
+public defstruct EqualLinesConstraint <: Constraint :
+  id : Int with: ( as-method => true )
+  group : Group with: ( as-method => true )
+  workplane : WorkPlane|FreeIn3D
+  l0 : LineSegment2|LineSegment3
+  l1 : LineSegment2|LineSegment3
+with:
+  constructor => #EqualLinesConstraint
+
+public lostanza defn EqualLinesConstraint (l0:ref<LineSegment2|LineSegment3>, l1:ref<LineSegment2|LineSegment3>) -> ref<EqualLinesConstraint> :
+  val nid = next(ids)
+  call-c printf("EQLINES CONSTRAINT %d\n", nid.value)
+  call-c Slvs_Add_Constraint(system(l0).value, nid.value, id(group(l0)).value, SLVS_C_EQUAL_LENGTH_LINES.value, id(workplane(l0)).value, 0.0, 0, 0, id(l0).value, id(l1).value)
+  return #EqualLinesConstraint(nid, group(l0), workplane(l0), l0, l1)
+

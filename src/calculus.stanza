@@ -1,0 +1,350 @@
+defpackage calculus :
+  import core
+  import math
+  import collections
+
+;                Automatic Differentiation
+;                =========================
+
+;Expression definition
+public deftype Exp <: Equalable & Hashable
+public defmulti vars (e:Exp) -> Tuple<Symbol>
+public defstruct Const <: Exp : (value:Float, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Variable <: Exp : (name:Symbol, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Define <: Exp : (name:Symbol, a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Add <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Subtract <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Multiply <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Divide <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Power <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Log <: Exp : (a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Sin <: Exp : (a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Cos <: Exp : (a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Acos <: Exp : (a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Atan2 <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Print <: Exp : (id:Int, a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
+
+public var num-equals:Int = 0
+
+defmethod equal? (e0:Exp, e1:Exp) -> True|False :
+   num-equals = num-equals + 1
+   match(e0, e1) :
+      (e0:Const, e1:Const) : value(e0) == value(e1)
+      (e0:Variable, e1:Variable) : name(e0) == name(e1)
+      (e0:Define, e1:Define) : name(e0) == name(e1) and equal?(a(e0), a(e1))
+      (e0:Add, e1:Add) : equal?(a(e0), a(e1)) and equal?(b(e0), b(e1))
+      (e0:Subtract, e1:Subtract) : equal?(a(e0), a(e1)) and equal?(b(e0), b(e1))
+      (e0:Multiply, e1:Multiply) : equal?(a(e0), a(e1)) and equal?(b(e0), b(e1))
+      (e0:Divide, e1:Divide) : equal?(a(e0), a(e1)) and equal?(b(e0), b(e1))
+      (e0:Power, e1:Power) : equal?(a(e0), a(e1)) and equal?(b(e0), b(e1))
+      (e0:Log, e1:Log) : equal?(a(e0), a(e1))
+      (e0:Acos, e1:Acos) : equal?(a(e0), a(e1))
+      (e0:Sin, e1:Sin) : equal?(a(e0), a(e1))
+      (e0:Cos, e1:Cos) : equal?(a(e0), a(e1))
+      (e0:Atan2, e1:Atan2) : equal?(a(e0), a(e1)) and equal?(b(e0), b(e1))
+      (e0:Exp, e1:Exp) : false
+      (e0:Print, e1:Print) : id(e0) == id(e1) and a(e0) == a(e1)
+
+public var num-hashes:Int = 0
+
+defmethod hash (e:Exp) -> Int :
+   num-hashes = num-hashes + 1
+   match(e) :
+      (e:Const) : 1 * hash(value(e))
+      (e:Variable) : 3 * hash(name(e))
+      (e:Define) : 7 * (hash(name(e)) * 3 * hash(a(e)))
+      (e:Log) : 11 * hash(a(e))
+      (e:Sin) : 49 * hash(a(e))
+      (e:Cos) : 57 * hash(a(e))
+      (e:Acos) : 63 * hash(a(e))
+      (e:Atan2) : 67 * (hash(a(e)) + 11 * hash(a(e)))
+      (e:Add) : 71 * (hash(a(e)) + 13 * hash(b(e)))
+      (e:Subtract) : 77 * (hash(a(e)) + 17 * hash(b(e)))
+      (e:Multiply) : 83 * (hash(a(e)) + 23 * hash(b(e)))
+      (e:Divide) : 95 * (hash(a(e)) + 31 * hash(b(e)))
+      (e:Power) : 103 * (hash(a(e)) + 37 * hash(b(e)))
+      (e:Print) : 117 * (hash(id(e)) + 41 * hash(a(e)))
+
+;Precedences
+defn precedence (e:Exp) :
+   match(e) :
+      (e:Add|Subtract) : 0
+      (e:Multiply|Divide|Power) : 1
+      (e:Power) : 2
+      (e:Const|Variable|Define|Log|Acos|Sin|Cos|Atan2|Print) : 3
+
+;Print behaviour for expressions
+defmethod print (o:OutputStream, e:Exp) :
+   defn print-nested (ne:Exp) :
+      if precedence(ne) < precedence(e) :
+         print(o, "(%_)" % [ne])
+      else :
+         print(o, ne)
+   defn print-operator (a:Exp, op:String, b:Exp) :
+      print-nested(a)
+      print(o, op)
+      print-nested(b)
+   match(e) :
+      (e:Const) : print(o, value(e))
+      (e:Variable) : print(o, name(e))
+      (e:Log) : print(o, "ln(%_)" % [a(e)])
+      (e:Acos) : print(o, "acos(%_)" % [a(e)])
+      (e:Sin) : print(o, "sin(%_)" % [a(e)])
+      (e:Cos) : print(o, "cos(%_)" % [a(e)])
+      (e:Atan2) : print(o, "atan2(%_,%_)" % [a(e), b(e)])
+      (e:Add) : print-operator(a(e), " + ", b(e))
+      (e:Subtract) : print-operator(a(e), " - ", b(e))
+      (e:Multiply) : print-operator(a(e), " * ", b(e))
+      (e:Divide) : print-operator(a(e), " / ", b(e))
+      (e:Power) : print-operator(a(e), " ^ ", b(e))
+      (e:Print) : print(o, "print(%_,%_)" % [id(e),a(e)])
+      (e:Define) : print(o, "define(%_,%_)" % [name(e),a(e)])
+
+public val E-F = exp(1.0f)
+
+;Overloaded operators
+public defn plus (a:Exp, b:Exp) : simplify-add(a, b)
+public defn minus (a:Exp, b:Exp) : simplify-subtract(a, b)
+public defn times (a:Exp, b:Exp) : simplify-multiply(a, b)
+public defn divide (a:Exp, b:Exp) : simplify-divide(a, b)
+public defn bit-xor (a:Exp, b:Exp) : simplify-power(a, b)
+public defn pow (a:Exp, b:Exp) : simplify-power(a, b)
+public defn ln (a:Exp) : simplify-log(a)
+public defn acos (a:Exp) : simplify-acos(a)
+public defn sin (a:Exp) : simplify-sin(a)
+public defn cos (a:Exp) : simplify-cos(a)
+public defn atan2 (a:Exp, b:Exp) : simplify-atan2(a, b)
+public defn exp (a:Exp) : pow(Const(E-F), a)
+
+;Differentiation algorithm
+public defn differentiate (e:Exp, x:Symbol) -> Exp :
+  ; if contains?(vars(e), x) :
+  if bsearch(vars(e), x) is Int :
+    defn ddx (e:Exp) : differentiate(e, x)
+
+    match(e) :
+     (e:Const) :
+        Const(0.0f)
+     (e:Variable) :
+        if name(e) == x : Const(1.0f)
+        else : Const(0.0f)
+     (e:Define) :
+        ddx(a(e))
+     (e:Add) :
+        ddx(a(e)) + ddx(b(e))
+     (e:Subtract) :
+        ddx(a(e)) - ddx(b(e))
+     (e:Multiply) :
+        a(e) * ddx(b(e)) + b(e) * ddx(a(e))
+     (e:Divide) :
+        val num = b(e) * ddx(a(e)) - a(e) * ddx(b(e))
+        val den = b(e) ^ Const(2.0f)
+        num / den
+     (e:Power) :
+       match(b(e)) :
+         (b:Const) : b * pow(a(e), b - Const(1.0f)) * ddx(a(e))
+         (b:Exp) :
+           if const?(a(e), E-F) :
+             e * ddx(b)
+           else :
+             e * (b * ddx(a(e)) / a(e) + ln(a(e)) * ddx(b))
+     (e:Log) :
+        ddx(a(e)) / a(e)
+     (e:Acos) :
+        (Const(-1.0f) / pow(Const(1.0f) - pow(a(e), Const(2.0f)), Const(-2.0f))) * ddx(a(e))
+     (e:Sin) :
+        Cos(a(e)) * ddx(a(e))
+     (e:Cos) :
+        Const(-1.0f) * sin(a(e)) * ddx(a(e))
+     (e:Atan2) :
+        ; defn d-atan (x:Exp) :
+        ;   (Const(1.0f) / (Const(1.0f) + pow(x, Const(2.0f)))) * ddx(x)
+        ; d-atan(Divide(b(e), Add(pow(Add(pow(a(e), Const(2.0f)), pow(b(e), Const(2.0f))), Const(0.5f)), a(e))))
+        ; ; (Const(1.0f) / (Const(1.0f) + pow(a(e), Const(2.0f)))) * ddx(Divide(a(e), b(e)))
+        val div = pow(a(e), Const(2.0f)) + pow(b(e), Const(2.0f))
+        ( (b(e) * ddx(a(e))) - (a(e) * ddx(b(e))) ) / div
+     (e:Print) :
+        ddx(a(e))
+  else :
+     Const(0.0f)
+        
+
+defn merge (a:Tuple<Symbol>, b:Tuple<Symbol>) -> Tuple<Symbol> :
+  val v = Vector<Symbol>()
+  let loop (ai:Int = 0, bi:Int = 0) :
+    if ai < length(a) :
+      if bi < length(b) :
+        val ae = a[ai]
+        val be = b[bi]
+        if to-string(ae) == to-string(be) :
+          add(v, ae)
+          loop(ai + 1, bi + 1)
+        else if to-string(ae) < to-string(be) :
+          add(v, ae)
+          loop(ai + 1, bi)
+        else :
+          add(v, be)
+          loop(ai, bi + 1)
+      else :
+        for i in ai to length(a) do : add(v, a[i])
+    else :
+      for i in bi to length(b) do : add(v, b[i])
+  to-tuple $ v
+
+defn bsearch (elts:Tuple<Symbol>, x:Symbol) -> False|Int :
+  let loop (l:Int = 0, r:Int = length(elts) - 1) :
+    if r >= l :
+      val mid = l + (r - l) / 2
+      if elts[mid] == x :
+        mid
+      else if to-string(elts[mid]) > to-string(x) :
+        loop(l, mid - 1)
+      else :
+        loop(mid + 1, r)
+
+public defn collect-vars (e:Exp) -> Exp :
+  let f (e:Exp = e) :
+    match(e) :
+      (e:Add) : (val na = f(a(e)), val nb = f(b(e)), Add(na, nb, merge(vars(na), vars(nb))))
+      (e:Subtract) : (val na = f(a(e)), val nb = f(b(e)), Subtract(na, nb, merge(vars(na), vars(nb))))
+      (e:Multiply) : (val na = f(a(e)), val nb = f(b(e)), Multiply(na, nb, merge(vars(na), vars(nb))))
+      (e:Divide) : (val na = f(a(e)), val nb = f(b(e)), Divide(na, nb, merge(vars(na), vars(nb))))
+      (e:Power) : (val na = f(a(e)), val nb = f(b(e)), Power(na, nb, merge(vars(na), vars(nb))))
+      (e:Atan2) : (val na = f(a(e)), val nb = f(b(e)), Atan2(na, nb, merge(vars(na), vars(nb))))
+      (e:Log) : (val na = f(a(e)), Log(na, vars(na)))
+      (e:Acos) : (val na = f(a(e)), Acos(na, vars(na)))
+      (e:Sin) : (val na = f(a(e)), Sin(na, vars(na)))
+      (e:Cos) : (val na = f(a(e)), Cos(na, vars(na)))
+      (e:Print) : (val na = f(a(e)), Print(id(e), na, vars(na)))
+      (e:Variable) : Variable(name(e), [name(e)])
+      (e:Define) : (val na = f(a(e)), Define(name(e), na, merge(vars(na), [name(e)])))
+      (e:Const) : e
+
+;Map helper
+public defn map (f: Exp -> Exp, e:Exp) -> Exp :
+   match(e) :
+      (e:Add) : Add(f(a(e)), f(b(e)), vars(e))
+      (e:Subtract) : Subtract(f(a(e)), f(b(e)), vars(e))
+      (e:Multiply) : Multiply(f(a(e)), f(b(e)), vars(e))
+      (e:Divide) : Divide(f(a(e)), f(b(e)), vars(e))
+      (e:Power) : Power(f(a(e)), f(b(e)), vars(e))
+      (e:Atan2) : Atan2(f(a(e)), f(b(e)), vars(e))
+      (e:Log) : Log(f(a(e)), vars(e))
+      (e:Acos) : Acos(f(a(e)), vars(e))
+      (e:Sin) : Sin(f(a(e)), vars(e))
+      (e:Cos) : Cos(f(a(e)), vars(e))
+      (e:Print) : Print(id(e), f(a(e)), vars(e))
+      (e:Define) : Define(name(e), f(a(e)), vars(e))
+      (e) : e
+
+;Map helper
+public defn do (f: Exp -> ?, e:Exp) :
+   match(e) :
+      (e:Add) : (f(a(e)), f(b(e)))
+      (e:Subtract) : (f(a(e)), f(b(e)))
+      (e:Multiply) : (f(a(e)), f(b(e)))
+      (e:Divide) : (f(a(e)), f(b(e)))
+      (e:Power) : (f(a(e)), f(b(e)))
+      (e:Atan2) : (f(a(e)), f(b(e)))
+      (e:Log) : (f(a(e)))
+      (e:Acos) : (f(a(e)))
+      (e:Sin) : (f(a(e)))
+      (e:Cos) : (f(a(e)))
+      (e:Print) : (id(e), f(a(e)))
+      (e:Define) : (name(e), f(a(e)))
+      (e) : false
+
+defn const? (e:Exp, v:Float) :
+  match(e) :
+     (e:Const) : value(e) == v
+     (e) : false
+defn one? (e:Exp) : const?(e, 1.0f)
+defn zero? (e:Exp) : const?(e, 0.0f)   
+defn const? (e:Exp) : e is Const
+
+defn simplify-add (a:Exp, b:Exp) -> Exp :
+  match(a, b) :
+    (a:Const, b:Const) : Const(value(a) + value(b))
+    (a:Exp, b:Exp) :
+      if zero?(a) : b
+      else if zero?(b) : a
+      else : Add(a, b)
+
+defn simplify-subtract (a:Exp, b:Exp) -> Exp :
+  match(a, b) :
+    (a:Const, b:Const) : Const(value(a) - value(b))
+    (a:Exp, b:Exp) :
+      if zero?(a) : Const(-1.0f) * b
+      else if zero?(b) : a
+      else : Subtract(a, b)
+
+defn simplify-multiply (a:Exp, b:Exp) -> Exp :
+  match(a, b) :
+    (a:Const, b:Const) : Const(value(a) * value(b))
+    (a:Exp, b:Exp) :
+      if zero?(a) or zero?(b) : Const(0.0f)
+      else if one?(a) : b
+      else if one?(b) : a
+      else : Multiply(a, b)
+
+defn simplify-divide (a:Exp, b:Exp) -> Exp :
+  match(a, b) :
+    (a:Const, b:Const) : Const(value(a) / value(b))
+    (a:Exp, b:Exp) :
+      if zero?(a) : Const(0.0f)
+      else if one?(b) : a
+      else : Divide(a, b)
+
+defn simplify-power (a:Exp, b:Exp) -> Exp :
+  match(a, b) :
+    (a:Const, b:Const) : Const(pow(value(a), value(b)))
+    (a:Exp, b:Exp) :
+      if one?(a) : Const(1.0f)
+      else if one?(b) : a
+      else if zero?(b) : Const(1.0f)
+      else : Power(a, b)
+
+defn simplify-log (a:Exp) -> Exp :
+  match(a) :
+    (a:Const) : Const(log(value(a)))
+    (a:Exp) :
+      if one?(a) : Const(0.0f)
+      else : Log(a)
+
+defn simplify-sin (a:Exp) -> Exp :
+  match(a) :
+    (a:Const) : Const(sin(value(a)))
+    (a:Exp) : Sin(a)
+  
+defn simplify-cos (a:Exp) -> Exp :
+  match(a) :
+    (a:Const) : Const(cos(value(a)))
+    (a:Exp) : Cos(a)
+
+defn simplify-acos (a:Exp) -> Exp :
+  match(a) :
+    (a:Const) : Const(acos(value(a)))
+    (a:Exp) : Acos(a)
+
+defn simplify-atan2 (a:Exp,b:Exp) -> Exp :
+  match(a,b) :
+    (a:Const,b:Const) : Const(atan2(value(a),value(b)))
+    (a:Exp,b:Exp) : Atan2(a,b)
+
+;Simplification algorithm
+public defn simplify (e:Exp, d:Int) :
+   ; for i in 0 to d do : print(" ")
+   ; println(">%_ %_" % [d, e])
+   val res = match(map(simplify{_, d + 1}, e)) :
+      (e:Add) : simplify-add(a(e), b(e))
+      (e:Subtract) : simplify-subtract(a(e), b(e))
+      (e:Multiply) : simplify-multiply(a(e), b(e))
+      (e:Divide) : simplify-divide(a(e), b(e))
+      (e:Power) : simplify-power(a(e), b(e))
+      (e:Log) : simplify-log(a(e))
+      (e:Sin) : simplify-sin(a(e))
+      (e:Cos) : simplify-cos(a(e))
+      (e) : e
+   ; for i in 0 to d do : print(" ")
+   ; println("<%_ %_" % [d, res])
+   res

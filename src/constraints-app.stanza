@@ -1,0 +1,1694 @@
+defpackage constraints-app :
+  import core
+  import math
+  import collections
+  import utils/file-system
+  import utils/math
+  import utils/rnd
+  import utils/seqable
+  import geom/vec
+  import geom/mat
+  import geom/angle
+  import geom/shape
+  import geom/bounded
+  import geom/poseable
+  import geom/line-segment
+  import geom/polygon
+  import geom/polyline
+  import geom/line-loop
+  import geom/box
+  import geom/polyhedron
+  import geom/polyhedra
+  import gui/props
+  import gui/lay
+  import gui/viz
+  import gfx/gl
+  import gfx/glfw
+  import geom/gfx
+  import gfx/drawing
+  import calculus
+  import constraints
+  import constraints-viz
+;  import constraints-macros
+  import stz/asmjit
+
+defn name (v:Entity) : id(v) ; alternative name
+
+defstruct LinkSpec :
+  name : Symbol
+  len : Float
+  ; start : Symbol
+  ; end : Symbol
+
+; defn vertices (spec:LinkSpec) -> Tuple<Symbol> :
+;   [start(spec), end(spec)]
+; 
+; defn connected? (spec:LinkSpec, vertex:Symbol) -> True|False :
+;   start(spec) == vertex or end(spec) == vertex
+; 
+; defn other (spec:LinkSpec, vertex:Symbol) -> Symbol :
+;   start(spec) when end(spec) == vertex else end(spec)
+
+; defenum LinkSide :
+;   LinkStart
+;   LinkEnd
+; 
+; defstruct LinkVertexSpec :
+;   link : Symbol
+;   side : LinkSide
+
+defenum JointKind :
+  HingeJoint
+  RotaryJoint
+
+defstruct JointSpec :
+  name : Symbol
+  ; axis : Int
+  ; limits : Box1f
+  kind: JointKind
+  link0 : Symbol
+  link1 : Symbol
+
+defn connected? (spec:JointSpec, link:Symbol) -> True|False :
+  link0(spec) == link or link1(spec) == link
+
+defn other (spec:JointSpec, link:Symbol) -> Symbol :
+  link0(spec) when link1(spec) == link else link1(spec)
+
+defmulti joint-angle (kind:JointKind, l0:Link, l1:Link) -> Angle 
+defmulti joint-cost (kind:JointKind, l0:Link, l1:Link) -> Exp
+
+defstruct KinematicsSpec :
+;  root : Symbol
+  links : Tuple<LinkSpec>
+  joints : Tuple<JointSpec>
+
+; defn vertices (spec:KinematicsSpec) -> Seqable<Symbol> :
+;   unique $ for link in links(spec) seq-cat : [start(link), end(link)]
+; 
+; defn links-of (spec:KinematicsSpec, vertex:Symbol) -> Seqable<LinkSpec> :
+;   for link in links(spec) filter : connected?(link, vertex)
+
+defstruct Link <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float
+  rnd-radius : Float with: (default => 1.0f)
+  len : Const with: (init => Const(init-len))
+  a : Vertex with: (init => Vertex(`a, false, V3f( -5.0f, 0.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f)), false))
+  b : Vertex with: (init => Vertex(`b, false, V3f(  5.0f, 0.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f)), false))
+  c : Vertex with: (init => Vertex(`c, true,  V3f( -5.0f, 0.0f, 5.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f)), false))
+  y : Edge with: (init => Edge(`y, a, b))
+  z : Edge with: (init => Edge(`z, a, c, true, false))
+  ang : Angle with: (init => ConnectedAngle(`abc, y, z, true))
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, c, y, z, ang])
+  cost : Exp with: (as-method => true, init =>
+    EdgeLengthConstraint( exp(y), len) + OrthogonalConstraint(exp(y), exp(z))) ;AngleConstraint(ang, Const(PI-F / 2.0f)))
+
+defmethod joint-angle (kind:HingeJoint, l0:Link, l1:Link) : 
+  Angle(`ang, b(l0), a(l0), a(l1), b(l1), true)
+
+defmethod joint-cost (kind:HingeJoint, l0:Link, l1:Link) :
+  ; OrthogonalConstraint(exp(z(l0)), exp(z(l1)))
+  ParallelConstraint(exp(z(l0)), exp(z(l1)))
+
+defmethod joint-angle (kind:RotaryJoint, l0:Link, l1:Link) :
+  Angle(`ang, z(l0), z(l1), true)
+
+defmethod joint-cost (kind:RotaryJoint, l0:Link, l1:Link) :
+  ParallelConstraint(exp(y(l0)), exp(y(l1)))
+
+defstruct Joint <: Module :
+  id : Symbol with: (as-method => true)
+  kind : JointKind
+  l0 : Link
+  l1 : Link
+  ang : Angle with: (init => joint-angle(kind, l0, l1))
+  entities : Tuple<Entity> with: (as-method => true, init => [ang])
+  cost : Exp with: (as-method => true, init =>
+    joint-cost(kind, l0, l1) +
+    SameVertexConstraint( [ b(l0), a(l1) ])
+    )
+
+defstruct KinematicsBody <: Module :
+  id : Symbol with: (as-method => true)
+  specs : KinematicsSpec
+  link-table : HashTable<Symbol,Link> with: (init => HashTable<Symbol,Link>())
+  links : Tuple<Link> with: (init => to-tuple $ for spec in links(specs) seq :
+    val link = make-instance(name(spec), Link{_, len(spec)})
+    println("link %_" % [name(spec)])
+    link-table[name(spec)] = link
+    link)
+  joints : Tuple<Joint> with: (init => to-tuple $ for spec in joints(specs) seq :
+    val l0 = link-table[link0(spec)]
+    val l1 = link-table[link1(spec)]
+    println("joint %_" % [name(spec)])
+    make-instance(name(spec), Joint{_, kind(spec), l0, l1}))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat(links, joints))
+  cost : Exp with: (as-method => true, init => Const(0.0f))
+
+defn joints (spec:KinematicsSpec, link:Symbol) -> Seqable<JointSpec> :
+  for joint in joints(spec) filter : connected?(joint, link)
+
+;;; KINEMATICS EXP
+
+defstruct LinkExpSpec :
+  name : Symbol
+  node0 : Symbol
+  node1 : Symbol
+  len : Float
+with:
+  printer => true
+
+defstruct JointExpSpec :
+  name : Symbol
+  axis : Int
+  limits : Box1f
+  link0 : Symbol
+  link1 : Symbol
+with:
+  printer => true
+
+val default-limits = Box1f(-0.5f * PI-F, 0.5f * PI-F)
+; val default-limits = Box1f(0.0f * PI-F, 0.0f * PI-F)
+
+defn connected? (spec:LinkExpSpec, node:Symbol) -> True|False :
+  node0(spec) == node or node1(spec) == node
+
+defn other (spec:LinkExpSpec, node:Symbol) -> Symbol :
+  node0(spec) when node1(spec) == node else node1(spec)
+
+defn connected? (spec:JointExpSpec, link:Symbol) -> True|False :
+  link0(spec) == link or link1(spec) == link
+
+defn other (spec:JointExpSpec, link:Symbol) -> Symbol :
+  link0(spec) when link1(spec) == link else link1(spec)
+
+defstruct KinematicsExpSpec :
+  root : Symbol
+  links : Tuple<LinkExpSpec>
+  joints : Tuple<JointExpSpec>
+with:
+  printer => true
+
+defn KinematicsExpSpec (root:Symbol, i-links-and-joints:Seqable<LinkExpSpec|JointExpSpec>) -> KinematicsExpSpec :
+  val lj = to-tuple $ i-links-and-joints
+  KinematicsExpSpec(
+    root,
+    to-tuple $ filter-by<LinkExpSpec>(lj), 
+    to-tuple $ filter-by<JointExpSpec>(lj))
+
+defn links-with-node (spec:KinematicsExpSpec, node:Symbol) -> Seq<LinkExpSpec> :
+  for link in links(spec) filter : connected?(link, node)    
+
+defn mov-y-mat-exp (del:Exp) -> MatExp :
+  mov-mat-exp(Vec3Exp(Const(0.0f), del, Const(0.0f)))
+
+defstruct LinkExp <: Entity :
+  id : Symbol with: (as-method => true)
+  len : Float
+  edge : Edge         ; points to two 
+  angle : SymVar
+  limits : Box1f
+  pose : SimplePoseExp
+  ; local-mat : MatExp
+  global-mat : Mat
+
+defmethod draw (e:LinkExp, size:Float) :
+  gl-color3f(1.0f, 1.0f, 1.0f)
+  gl-push-matrix()
+  ; println("%_" % [value(global-mat(e))])
+  gl-mult-matrix(value(global-mat(e)))
+  ; gl-mult-matrix(id-mat44f())
+  gl-translatef(0.0f, -0.5f * len(e), 0.0f)
+  draw-rect3(1.0f, len(e), 1.0f)
+  gl-pop-matrix()
+
+defmethod vars (e:LinkExp) -> Seqable<AnyVar> :
+  cat(vars(edge(e)), [angle(e)])
+
+defn init-edges (id:Symbol, spec:KinematicsExpSpec, vertices:HashTable<Symbol,Vertex>) -> HashTable<Symbol,LinkExp> :
+  val link-specs = to-hashtable<Symbol, LinkExpSpec> $
+    for l in links(spec) seq : name(l) => l
+  val joint-specs = to-hashtable<[Symbol,Symbol], JointExpSpec> $
+    for j in joints(spec) seq-cat : [[link0(j),link1(j)] => j, [link1(j),link0(j)] => j]
+  val link-nbrs = HashTable<Symbol, List<Symbol>>(List())
+  for joint in joints(spec) do :
+    link-nbrs[link0(joint)] = cons(link1(joint), link-nbrs[link0(joint)])
+    link-nbrs[link1(joint)] = cons(link0(joint), link-nbrs[link1(joint)])
+
+  println(spec)
+  println(to-tuple $ link-nbrs)
+
+  val visited-links? = HashSet<Symbol>()
+  val origin = Vertex(root(spec), false, V3f(0.0f, 0.0f, 0.0f), false)
+  vertices[root(spec)] = origin
+  val link-exps = HashTable<Symbol,LinkExp>()
+  let loop (from-link-name:False|Symbol = false, from-vertex:Vertex = origin, from-global-mat:MatExp = id-mat-exp()) :
+    println("FROM-LINK %_ FROM-VERTEX %_" % [from-link-name, name(from-vertex)])
+    for to-link-spec in links-with-node(spec, name(from-vertex)) do :
+      val to-link-name = name(to-link-spec)
+      println(">>> WALKING LINK %_" % [to-link-name])
+      if not visited-links?[to-link-name] :
+        add(visited-links?, to-link-name)
+        val [axis, angle, limits] =
+          match(from-link-name:Symbol) :
+            val joint-spec = joint-specs[[from-link-name, to-link-name]]
+            val angle-value = rnd(limits(joint-spec))
+            println("%_ = %_" % [name(joint-spec), radians-to-degrees(angle-value)])
+            val angle = SymVar(name(joint-spec), angle-value, limits(joint-spec)) 
+            [axis(joint-spec), angle, limits(joint-spec)]
+          else :
+            [2, SymVar(`root, 0.0f, false), Box1f(0.0f, 0.0f)]
+        val pose = SimplePoseExp(Vec3Exp(Const(0.0f), Const(len(to-link-spec)), Const(0.0f)), axis, exp(angle))
+        val to-local-mat = to-mat-exp(pose)
+        val to-global-mat = to-local-mat * from-global-mat
+        val to-global-mat-vars = Mat(to-link-name, to-global-mat)
+        val to-vertex-name = other(to-link-spec, name(from-vertex))
+        val to-vertex = Vertex(to-vertex-name, to-global-mat * Const(V3f(0.0f, 0.0f, 0.0f)))
+        vertices[to-vertex-name] = to-vertex
+        val edge = Edge(to-link-name, from-vertex, to-vertex)
+        val to-link-exp = LinkExp(to-link-name, len(to-link-spec), edge, angle, limits, pose, to-global-mat-vars) ; to-local-mat, 
+        link-exps[to-link-name] = to-link-exp
+        loop(to-link-name, to-vertex, to-global-mat)
+
+  println(to-tuple $ link-exps)
+  println(to-tuple $ vertices)
+
+  link-exps
+
+defstruct KinematicsExpBody <: Module :
+  id : Symbol with: (as-method => true)
+  specs : KinematicsExpSpec
+  vertex-table : HashTable<Symbol,Vertex> with: (init => HashTable<Symbol,Vertex>())
+  link-table : HashTable<Symbol,LinkExp> with: (init => init-edges(id, specs, vertex-table))
+  entities : Tuple<Entity> with: (as-method => true, init =>
+    to-tuple $ cat-all $ [values(vertex-table), for l in values(link-table) seq-cat : [l, angle(l), edge(l), global-mat(l)]])
+  cost : Exp with: (as-method => true, init => Const(0.0f))
+
+defstruct KinematicsExpBody2 <: Module :
+  id : Symbol with: (as-method => true)
+  len : Const with: (init => Const(5.0f))
+  s : SymVar with: (init => SymVar(`s, PI-F / 4.0f))
+  t : SymVar with: (init => SymVar(`t, PI-F / 2.0f))
+  a : Vertex with: (init => Vertex(`a, false, V3f(0.0f, 0.0f, 0.0f), false))
+  b : Vertex with: (init => Vertex(`b, exp(a) + len * Vec3Exp(cos(exp(s)), sin(exp(s)), Const(0.0f))))
+  c : Vertex with: (init => Vertex(`c, exp(b) + len * Vec3Exp(cos(exp(t)), sin(exp(t)), Const(0.0f))))
+  ab : Edge with: (init => Edge(`ab, a, b))
+  bc : Edge with: (init => Edge(`bc, b, c))
+  entities : Tuple<Entity> with: (as-method => true, init => [s, t, a, b, c, ab, bc])
+  ; cost : Exp with: (as-method => true, init => SameVecConstraint([ exp(c) Vec3Exp(Const(-1.0f), Const(1.0f), Const(0.0f))]))
+  ; cost : Exp with: (as-method => true, init => SameConstraint(exp(y(c)) Const(0.0f)))
+  ; cost : Exp with: (as-method => true, init => SameConstraint(exp(x(c)) Const(-2.0f)))
+  cost : Exp with: (as-method => true, init => Const(0.0f))
+
+defstruct SameVerticesBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f(-1.0f, -4.0f, 0.0f)))
+  b : Vertex with: (init => Vertex(`b, V3f( 0.0f, 5.0f, 0.0f)))
+  entities : Tuple<Entity> with: (as-method => true, init => [a b])
+  cost : Exp with: (as-method => true, init => SameVertexConstraint( [a, b] ))
+
+defstruct ReflectionBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f(-4.0f, -4.0f, 0.0f)))
+  b : Vertex with: (init => Vertex(`b, V3f( 5.0f, -5.0f, 0.0f)))
+  ab : Edge with: (init => Edge(`ab, a, b))
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, ab])
+  cost : Exp with: (as-method => true, init => SameVecConstraint([ reflect-x-mat-exp() * exp(a), exp(b)]))
+
+defstruct CopyBody <: Module :
+  id : Symbol with: (as-method => true)
+  entities : Tuple<Entity> with: (as-method => true)
+  cost : Exp with: (as-method => true, init => Const(0.0f), updater => sub-cost)
+  
+defn CopyBody (name:Symbol, m:Module, mat:MatExp) -> CopyBody :
+  val copied = HashTable<Symbol,Entity>()
+  val orig-vertices = to-hashtable<Symbol,Vertex> $ for v in all-vertices(m) seq : id(v) => v
+  val res = CopyBody(name, to-tuple $ seq(copy{_, name, copied}, filter-by<SymVar|Vertex|Edge|Circle|Angle>(all-entities(m))))
+  val cost = sum $ for kv in orig-vertices seq :
+    SameVecConstraint([ mat * exp(value(kv)), exp(copied[key(kv)] as Vertex)])
+  sub-cost(res, cost)
+
+defstruct TranslateSquareBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float with: (default => 7.0f)
+  s0 : ParallelogramBody with: (init => make-instance(`s0, { SquareBody(_, init-len, false) }))
+  s1 : CopyBody with: (init => CopyBody(`s1, s0, mov-mat-exp(Const(x3f(10.0f)))))
+  entities : Tuple<Entity> with: (as-method => true, init => [s0, s1])
+  cost : Exp with: (as-method => true, init => Const(0.0f))
+
+; broken now because it just keeps getting bigger
+defstruct SameSideBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f( 0.0f, -5.0f, 0.0f)))
+  b : Vertex with: (init => Vertex(`b, V3f( 0.0f,  5.0f, 0.0f)))
+  c : Vertex with: (init => Vertex(`c, V3f(-2.0f,  0.0f, 0.0f)))
+  d : Vertex with: (init => Vertex(`d, V3f( 2.0f,  0.0f, 0.0f)))
+  ab : Edge with:  (init => Edge(`ab, a, b))
+  entities : Tuple<Entity> with: (as-method => true, init => [a b, c, d, ab])
+  cost : Exp with: (as-method => true, init => Print(0, SameSideConstraint(exp(ab), exp(c), exp(d))))
+
+defstruct LineBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float 
+  rnd-radius : Float with: (default => 1.0f)
+  len : SymVar with: (init => SymVar(`len, init-len))
+  a : Vertex with:   (init => Vertex(`a, V3f(-5.0f, 0.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f))))
+  b : Vertex with:   (init => Vertex(`b, V3f( 5.0f, 0.0f) + rnd-radius * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f))))
+  ab : Edge with:    (init => Edge(`ab, a, b))
+  entities : Tuple<Entity> with: (as-method => true, init => [len, a, b, ab])
+  cost : Exp with: (as-method => true, init => EdgeLengthConstraint( exp(ab), exp(len)))
+
+defstruct MaxBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : SymVar with: (init => SymVar(`a, 2.0f, true))
+  b : SymVar with: (init => SymVar(`b, 16.0f, true))
+  l : LineBody with: (init => make-instance(`l, LineBody{_, 5.0f}))
+  entities : Tuple<Entity> with: (as-method => true, init => [a b l])
+  cost : Exp with: (as-method => true, init => SameConstraint(Print(0, max(exp(a), exp(b))), exp(len(l))))
+
+defstruct MinBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : SymVar with: (init => SymVar(`a, 2.0f, true))
+  b : SymVar with: (init => SymVar(`b, 16.0f, true))
+  l : LineBody with: (init => make-instance(`l, LineBody{_, 5.0f}))
+  entities : Tuple<Entity> with: (as-method => true, init => [a b l])
+  cost : Exp with: (as-method => true, init => SameConstraint(Print(0, min(exp(a), exp(b))), exp(len(l))))
+
+defstruct MinLinesBody <: Module :
+  id : Symbol with: (as-method => true)
+  l0 : LineBody with: (init => make-instance(`l0, LineBody{_, 6.0f, 5.0f}))
+  l1 : LineBody with: (init => make-instance(`l1, LineBody{_, 5.0f, 5.0f}))
+  entities : Tuple<Entity> with: (as-method => true, init => [l0 l1])
+  cost : Exp with: (as-method => true, init =>
+    min(min(distance(exp(a(l0)), exp(a(l1))), distance(exp(a(l0)), exp(b(l1)))),
+        min(distance(exp(b(l0)), exp(a(l1))), distance(exp(b(l0)), exp(b(l1))))))
+
+defn distance (e:Edge, p:Vertex) -> Exp :
+  val [a, b] = [v0(e), v1(e)]
+  val h = min(Const(1.0f), max(Const(0.0f),
+                               dot(exp(p) - exp(a), exp(b) - exp(a)) /
+                               dot(exp(b) - exp(a), exp(b) - exp(a))))
+  magnitude(exp(p) - exp(a) - h * (exp(b) - exp(a)))
+
+defstruct PointLineBody <: Module :
+  id : Symbol with: (as-method => true)
+  p : Vertex with: (init => Vertex(`a, rnd(dims-to-box(xyz(10.0f)))))
+  l : LineBody with: (init => make-instance(`l, LineBody{_, 5.0f, 5.0f}))
+  entities : Tuple<Entity> with: (as-method => true, init => [p l])
+  cost : Exp with: (as-method => true, init => distance(ab(l), p))
+
+defstruct OnLineBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f(-1.0f, -4.0f, 0.0f)))
+  b : Vertex with: (init => Vertex(`b, V3f( 0.0f, 5.0f, 0.0f)))
+  c : Vertex with: (init => Vertex(`c, V3f(-3.0f, 2.0f, 0.0f)))
+  ab : Edge with: (init => Edge(`ab, a, b))
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, c, ab])
+  cost : Exp with: (as-method => true, init => OnLineConstraint( exp(c), exp(ab), Const(0.0f) ))
+
+defstruct MidPointLineBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-len :Float
+  l : LineBody with: (init => make-instance(`l, LineBody{_, init-len}))
+  mid : Vertex with: (init => Vertex(`mid, true, xyz(0.0f), false))
+  entities : Tuple<Entity> with: (as-method => true, init => [l, mid])
+  cost : Exp with: (as-method => true, init => MidPointConstraint([exp(a(l)), exp(b(l))], exp(mid)))
+
+defstruct VerticalLineBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f(-1.0f, -4.0f, 0.0f)))
+  b : Vertex with: (init => Vertex(`b, V3f( 0.0f, 5.0f, 0.0f)))
+  ab : Edge with: (init => Edge(`ab, a, b))
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, ab])
+  cost : Exp with: (as-method => true, init => VerticalConstraint( exp(ab) ))
+
+defstruct HorizontalLineBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f(-4.0f, -4.0f, 0.0f)))
+  b : Vertex with: (init => Vertex(`b, V3f( 5.0f, -5.0f, 0.0f)))
+  ab : Edge with: (init => Edge(`ab, a, b))
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, ab])
+  cost : Exp with: (as-method => true, init => HorizontalConstraint( exp(ab) ))
+
+defstruct ParallelLinesBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f(-4.0f, -4.0f, 0.0f)))
+  b : Vertex with: (init => Vertex(`b, V3f( 5.0f, -5.0f, 0.0f)))
+  c : Vertex with: (init => Vertex(`c, V3f( -4.0f,  -5.0f, 0.0f)))
+  d : Vertex with: (init => Vertex(`d, V3f( 5.0f,  -7.0f, 0.0f)))
+  ab : Edge with: (init => Edge(`ab, a, b))
+  cd : Edge with: (init => Edge(`bc, c, d))
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, c, d, ab, cd])
+  cost : Exp with: (as-method => true, init => ParallelConstraint(exp(ab), exp(cd)))
+
+defstruct RightAngleBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f(-1.0f, -4.0f, 0.0f)))
+  b : Vertex with: (init => Vertex(`b, V3f( 0.0f, 5.0f, 0.0f)))
+  c : Vertex with: (init => Vertex(`c, V3f(-3.0f, 2.0f, 0.0f)))
+  ab : Edge with: (init => Edge(`ab, a, b))
+  bc : Edge with: (init => Edge(`bc, b, c))
+  ang : Angle with: (init => ConnectedAngle(`abc, ab, bc, true))
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, c, ab, bc, ang])
+  cost : Exp with: (as-method => true, init => AngleConstraint(ang, Const(PI-F / 2.0f)))
+
+
+defstruct TriangleBody <: Module :
+  id : Symbol with: (as-method => true)
+  a : Vertex with: (init => Vertex(`a, V3f(-5.0f, -5.0f, rndf(-0.1f, 0.1f))))
+  b : Vertex with: (init => Vertex(`b, V3f( 5.0f, -5.0f, rndf(-0.1f, 0.1f))))
+  c : Vertex with: (init => Vertex(`c, V3f( 0.0f,  5.0f, rndf(-0.1f, 0.1f))))
+  edges : Tuple<Edge> with: (init => to-tuple $ for ([f,t] in successive-pairs-wrapped([a, b, c])) seq :
+    Edge(symbol-join([vertex-name(f) vertex-name(t)]), f, t))
+  ab : Edge with: (init => edges[0])
+  bc : Edge with: (init => edges[1])
+  ca : Edge with: (init => edges[2])
+  entities : Tuple<Entity> with: (as-method => true, init => [a, b, c, ab, bc, ca])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => Const(0.0f))
+
+defn EqualateralTriangleBody (id:Symbol) :
+  val t = TriangleBody(id)
+  sub-cost(t, EqualLengthConstraint $ [exp(ab(t)), exp(bc(t)), exp(ca(t))])
+
+defstruct ReferenceTriangleBody <: Module :
+  id : Symbol with: (as-method => true)
+  t : TriangleBody with: (init => make-instance(`t, EqualateralTriangleBody))
+  rvertex : Vertex with: (init => Vertex(`d, true, xyz(0.0f), false))
+  redge : Edge with: (init => Edge(`e3, rvertex, c(t), true, false))
+  entities : Tuple<Entity> with: (as-method => true, init => [t, rvertex, redge])
+  cost : Exp with: (as-method => true, init => MidPointConstraint([exp(a(t)), exp(b(t))], exp(rvertex)))
+
+defstruct TwoEqualateralTrianglesBody <: Module :
+  id : Symbol with: (as-method => true)
+  t0 : TriangleBody with: (init => make-instance(`t0, EqualateralTriangleBody))
+  t1 : TriangleBody with: (init => make-instance(`t1, EqualateralTriangleBody))
+  entities : Tuple<Entity> with: (as-method => true, init => [t0, t1])
+  cost : Exp with: (as-method => true, init => sum $ [
+    SameVertexConstraint([a(t0), a(t1)]),
+    SameVertexConstraint([b(t0), c(t1)]) ])
+
+defstruct TetrahedronBody <: Module :
+  id : Symbol with: (as-method => true)
+  tris : Tuple<TriangleBody> with: (init => to-tuple $ for i in 0 to 4 seq :
+    make-instance(symbol-join([`t i]), EqualateralTriangleBody))
+  entities : Tuple<Entity> with: (as-method => true, init => tris)
+  cost : Exp with: (as-method => true, init => sum $ [
+    EdgeLengthConstraint(exp(ab(tris[0])), Const(10.0f))
+    SameEdgeConstraint([exp(ab(tris[0])), exp(ab(tris[1]))])
+    SameEdgeConstraint([exp(bc(tris[0])), exp(ab(tris[2]))])
+    SameEdgeConstraint([exp(ca(tris[0])), exp(ab(tris[3]))])
+    SameVertexConstraint([c(tris[1]), c(tris[2]), c(tris[3])]) ])
+
+defn vertex-name (v:Vertex) -> Symbol :
+  val str = to-string $ id(v)
+  match(last-index-of-char(str, 0 to false, '/')) :
+    (i:Int) : to-symbol $ str[(i + 1) to false]
+    (i:False) : id(v)
+
+defn rectangle-corners (dims:V2f, x-dir:V3f, y-dir:V3f) -> [V3f, V3f, V3f, V3f] :
+  ; println("DIMS %_ WDIR %_ HDIR %_" % [dims, x-dir, y-dir])
+  ; defn r () : rndf(-0.2f, 0.2f)
+  defn r () : 0.0f
+  [ (-0.5f + r()) * x(dims) * x-dir + (-0.5f + r()) * y(dims) * y-dir,
+    ( 0.5f + r()) * x(dims) * x-dir + (-0.5f + r()) * y(dims) * y-dir,
+    ( 0.5f + r()) * x(dims) * x-dir + ( 0.5f + r()) * y(dims) * y-dir,
+    (-0.5f + r()) * x(dims) * x-dir + ( 0.5f + r()) * y(dims) * y-dir ]
+
+defn rectangle-corners (dims:V2f) :
+ rectangle-corners(dims, x3f(1.0f), y3f(1.0f))
+
+defn rectangle-corners (s:V3f, f:V3f, n:V3f, w:Float) :
+  ; println("S %_ F %_ N %_ W %_" % [s, f, n, w])
+  val y = f - s
+  val ny = normalize(y)
+  val nx = ny % n
+  val [a, b, c, d] = rectangle-corners(V2f(w, magnitude(y) - 2.0f * w), nx, ny)
+  val ctr = (f + s) / 2.0f
+  [ctr + a, ctr + b, ctr + c, ctr + d]
+
+; defstruct QuadrilateralBody <: Module :
+
+defstruct ParallelogramBody <: Module :
+  id : Symbol with: (as-method => true)
+  dims : V2f
+  fixed? : True|False
+  init-vectors : [V3f, V3f, V3f, V3f] with: (default => rectangle-corners(dims))
+  width : SymVar with: (init => SymVar(`width, x(dims), not fixed?))
+  height : SymVar with: (init => SymVar(`height, y(dims), not fixed?))
+  a : Vertex with: (init => Vertex(`a, init-vectors[0]))
+  b : Vertex with: (init => Vertex(`b, init-vectors[1]))
+  c : Vertex with: (init => Vertex(`c, init-vectors[2]))
+  d : Vertex with: (init => Vertex(`d, init-vectors[3]))
+  edges : Tuple<Edge> with: (init => to-tuple $ for [f,t] in successive-pairs-wrapped([a b c d]) seq :
+    Edge(symbol-join([vertex-name(f) vertex-name(t)]), f, t, false, true))
+  ab : Edge with: (init => edges[0])
+  bc : Edge with: (init => edges[1])
+  cd : Edge with: (init => edges[2])
+  da : Edge with: (init => edges[3])
+  ang : Angle with: (init => ConnectedAngle(`ang, ab, bc, true))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat([width, height, a, b, c, d, ang], edges), updater => sub-entities)
+  cost : Exp with: (as-method => true, updater => sub-cost, init => sum $ [
+    EqualLengthConstraint([ exp(ab), exp(cd) ])
+    EdgeLengthConstraint( exp(ab), exp(width) )
+    EqualLengthConstraint([ exp(bc), exp(da) ])
+    EdgeLengthConstraint( exp(bc), exp(height) )
+    ])
+
+defn RectangleBody (id:Symbol, dims:V2f, fixed?:True|False, init-vectors:[V3f, V3f, V3f, V3f]) -> ParallelogramBody :
+  val r = ParallelogramBody(id, dims, fixed?, init-vectors)
+  sub-cost(r, cost(r) + AngleConstraint(ang(r), Const(PI-F / 2.0f)))
+
+defn RectangleBody (id:Symbol, dims:V2f, fixed?:True|False) -> ParallelogramBody :
+  RectangleBody(id, dims, fixed?, rectangle-corners(dims))
+
+defn OptionalRectangleBody (id:Symbol, dims:V2f, fixed?:True|False, init-vectors:[V3f, V3f, V3f, V3f], angle?:SymVar) -> ParallelogramBody :
+  val r = ParallelogramBody(id, dims, fixed?, init-vectors)
+  val nr = sub-cost(r, cost(r) + exp(angle?) * AngleConstraint(ang(r), Const(PI-F / 2.0f)))
+  sub-entities(nr, to-tuple $ cat(entities(nr), [ angle? ]))
+
+defn OptionalRectangleBody (id:Symbol, dims:V2f, fixed?:True|False, angle?:SymVar) -> ParallelogramBody :
+  OptionalRectangleBody(id, dims, fixed?, rectangle-corners(dims), angle?)
+
+; TODO: DO THIS FOR BOUNDING BOX
+defn center (m: Module) -> Vec3Exp :
+  val verts = to-tuple $ vertices(m)
+  reduce(plus, seq(exp, verts)) / Const(to-float(length(verts)))
+
+defn SquareBody (name:Symbol, init-len:Float, fixed?:True|False) -> ParallelogramBody :
+  val r = RectangleBody(name, xy(init-len), fixed?)
+  sub-cost(r, cost(r) + EqualLengthConstraint([ exp(ab(r)), exp(bc(r)) ]))
+
+defstruct EdgePlaneRectangleBody <: Module :
+  id : Symbol with: (as-method => true)
+  w : Float with: (default => 2.0f)
+  si : V3f with: (default => rnd(dims-to-box $ xyz(10.0f)))
+  fi : V3f with: (default => rnd(dims-to-box $ xyz(10.0f)))
+  y : V3f with: (init => fi - si)
+  ni : V3f with: (default => normalize(rnd(dims-to-box $ xyz(2.0f))) % normalize(y))
+  s : Vertex with: (init => Vertex(`s, false, si, false))
+  f : Vertex with: (init => Vertex(`f, false, fi, false))
+  n : Vertex with: (init => Vertex(`n, false, ni, true))
+  e : Edge with: (init => Edge(`e, s, f))
+  p : Plane with: (init => Plane(`p, s, n))
+  r : ParallelogramBody with: (init =>
+    make-instance(`r, RectangleBody{_, V2f(w, magnitude(y)), false, rectangle-corners(si, fi, ni, w)}))
+  entities : Tuple<Entity> with: (as-method => true, init => [p, f, e, r])
+  cost : Exp with: (as-method => true, init => sum $ [
+    sum $ for v in vertices(r) seq : ProjectOntoPlane(exp(v), exp(p)),
+    sum $ for v in vertices(r) seq : OnLineConstraint(exp(v), exp(e), Const(0.5f * w)) ])
+
+defstruct SpokesBody <: Module :
+  id : Symbol with: (as-method => true)
+  num : Int 
+  rad : Float with: (init => 5.0f)
+  poly : Polygon with: (init => polygon-n(2.0f * rad, num))
+  verts : Tuple<Vertex> with: (init => to-tuple $ for (p in vertices(contours(poly)[0]), i in 0 to false) seq :
+    Vertex(symbol-join $ [`v i], false, xyz(p), true))
+  center : Vertex with: (init => Vertex(`c, false, z3f(5.0f), true))
+  edges : Tuple<Edge> with: (init => to-tuple $ for (v in verts, i in 0 to false) seq :
+    Edge(symbol-join $ [`e i], center, v))
+  edge-normals : Tuple<V3f> with: (init => to-tuple $ for e in edges seq :
+    val v = normalize(init(v1(e)) - init(v0(e)))
+    val r = (v % z3f(1.0f)) % v
+    println(r)
+    r)
+  rectangles : Tuple<EdgePlaneRectangleBody> with: (init => to-tuple $ for (e in edges, i in 0 to false) seq :
+    make-instance(symbol-join $ [`r i], EdgePlaneRectangleBody{_, 1.0f, init(v0(e)), init(v1(e)), edge-normals[i]}))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat-all $ [verts, [center], edges, rectangles])
+  cost : Exp with: (as-method => true, init => sum $ for [p,n] in successive-pairs-wrapped(seq(r, rectangles)) seq :
+    SameVecConstraint $ [exp(b(p)), exp(a(n)) ])
+
+defstruct LineLoopExp :
+  vertices: Tuple<Vec3Exp>
+
+defn line-normal (line:LineLoopExp) -> Vec3Exp :
+  val pts = vertices(line)
+  normalize(normalize(pts[0] - pts[1]) % normalize(pts[2] - pts[1]))
+
+defn line-center (line:LineLoopExp) -> Vec3Exp :
+  reduce(plus, vertices(line)) / Const(to-float(length(vertices(line))))
+
+defn line-plane (line:LineLoopExp) -> PlaneExp :
+  PlaneExp(line-center(line), line-normal(line))
+
+defstruct SymPolyhedron :
+  value : Polyhedron 
+  vertices : Tuple<Vertex> with: (init => to-tuple $ for (v in vertices(value), i in 0 to false) seq :
+    Vertex(symbol-join $ [`v i], v))
+  edges : Tuple<Edge> with: (init => to-tuple $ for (e in edges(value), i in 0 to false) seq :
+    Edge(symbol-join $ [`e i], vertices[e[0]], vertices[e[1]], false, true))
+
+defn mesh-face-outline (sp:SymPolyhedron, face:Tuple<Int>) -> LineLoopExp :
+  LineLoopExp(for vi in face map : exp(vertices(sp)[vi]))
+
+defn mesh-face-plane (sp:SymPolyhedron, f:Tuple<Int>) -> PlaneExp :
+  line-plane(mesh-face-outline(sp, f))  
+
+defn mesh-face-normal (sp:SymPolyhedron, f:Tuple<Int>) -> Vec3Exp :
+  line-normal(mesh-face-outline(sp, f))  
+
+defn mesh-edge-center (sp:SymPolyhedron, e:Tuple<Int>) -> Vec3Exp :
+  (exp(vertices(sp)[e[0]]) + exp(vertices(sp)[e[1]])) / Const(2.0f)
+
+defn mesh-edge-normal (sp:SymPolyhedron, e:Tuple<Int>) -> Vec3Exp :
+  (exp(vertices(sp)[e[0]]) + exp(vertices(sp)[e[1]])) / Const(2.0f)
+
+defn mesh-edge-plane (p:SymPolyhedron, e:Tuple<Int>) -> PlaneExp :
+  val faces = to-tuple $ edge-faces(value(p), e)
+  val normal = normalize(normalize(mesh-face-normal(p, faces[0])) + normalize(mesh-face-normal(p, faces[1])))
+  PlaneExp(mesh-edge-normal(p, e), normal)
+
+defn closest-corners (a:ParallelogramBody, b:ParallelogramBody) -> [Vertex, Vertex] :
+  var min:Float = FLOAT-POSITIVE-INFINITY
+  var best:[Vertex,Vertex]
+  for av in vertices(a) do :
+    for bv in vertices(b) do :
+      val d = distance(init(av), init(bv))
+      if d < min :
+        min = d
+        best = [av, bv]
+  best
+
+defn edge-neighbor? (all-edges:HashSet<[Int,Int]>, e0:[Int,Int], e1:[Int,Int]) -> True|False :
+  match(shared-vertex(e0, e1)) :
+    (sv:Int) : all-edges[[min(end-id(e0, sv), end-id(e1, sv)), max(end-id(e0, sv), end-id(e1, sv))]]
+    (sv:False) : false
+
+defn in-face? (f:Tuple<Int>, e:[Int,Int]) -> True|False :
+  for [p,n] in successive-pairs-wrapped(f) any? :
+    [min(p,n),max(p,n)] == e
+
+defn vertex-faces (poly:Polyhedron, v:Int) -> Seq<Tuple<Int>> :
+  for face in faces(poly) filter : contains?(face, v)
+
+defn share-face? (faces:Tuple<Tuple<Int>>, e0:[Int,Int], e1:[Int,Int]) -> True|False :
+  val e0-faces = for f in faces filter : in-face?(f, e0)
+  for f in e0-faces any? : in-face?(f, e1)
+
+defstruct PolyhedronBody <: Module :
+  id : Symbol with: (as-method => true)
+  poly : Polyhedron
+  init-len : Float
+  sym-poly : SymPolyhedron with: (init => SymPolyhedron(poly))
+  len : SymVar with: (init => SymVar(`len, init-len, false))
+  edge-planes : Tuple<PlaneExp> with: (init => to-tuple $ for e in edges(poly) seq : mesh-edge-plane(sym-poly, e))
+  face-planes : Tuple<PlaneExp> with: (init => to-tuple $ for f in faces(poly) seq : mesh-face-plane(sym-poly, f))
+  rectangles : HashTable<[Int,Int], EdgePlaneRectangleBody> with: (init => to-hashtable<[Int,Int], EdgePlaneRectangleBody> $
+    for (e in edges(poly), i in 0 to false) seq :
+      e => make-instance(symbol-join $ [`r i], EdgePlaneRectangleBody{_, 1.0f, vertices(poly)[e[0]], vertices(poly)[e[1]], edge-normal(poly, e)}))
+  entities : Tuple<Entity> with: (as-method => true, init =>
+    to-tuple $ cat-all $ [vertices(sym-poly), edges(sym-poly), values(rectangles), [len]])
+  cost : Exp with: (as-method => true, init => sum $ [
+    ; sum $ for e in edges(sym-poly) seq : EdgeLengthConstraint( exp(e), exp(len) )
+    sum $ for epr in values(rectangles) seq : SameConstraint( exp(height(r(epr))), exp(len) )
+    sum $ for e in edges(poly) seq :
+      val r = rectangles[e]
+      SameVecConstraint( [exp(vertices(sym-poly)[e[0]]), exp(s(r))] ) +
+      SameVecConstraint( [exp(vertices(sym-poly)[e[1]]), exp(f(r))] )
+    sum $ generate<Exp> :
+      for (v in vertices(poly), vi in 0 to false) do :
+        val v-faces = to-tuple $ vertex-faces(poly, vi)
+        val es = to-tuple $ edges(poly, vi)
+        for i in 0 to length(es) do :
+          for j in (i + 1) to length(es) do :
+            if share-face?(v-faces, es[i], es[j]) :
+              val [pv, nv] = closest-corners(r(rectangles[es[i]]), r(rectangles[es[j]]))
+              yield $ SameVecConstraint $ [exp(pv), exp(nv)]
+    ])
+
+defstruct TwoSquaresBody <: Module :
+  id : Symbol with: (as-method => true)
+  s0 : ParallelogramBody with: (init => make-instance(`s0, SquareBody{_, 7.0f, true}))
+  s1 : ParallelogramBody with: (init => make-instance(`s1, SquareBody{_, 7.0f, true}))
+  entities : Tuple<Entity> with: (as-method => true, init => [s0, s1])
+  cost : Exp with: (as-method => true, init => sum $ [
+    OnLineConstraint(exp(bc(s0)), exp(da(s1)), Const(0.0f)),
+    SameConstraint(y(exp(c(s0))), Const(0.0f)), 
+    HorizontalConstraint(exp(cd(s0)))
+    HorizontalConstraint(exp(cd(s1)))
+    HorizontalConstraint(exp(c(s0)), exp(c(s1)))
+    ])
+
+defstruct SquareInTriangleBody <: Module :
+  id : Symbol with: (as-method => true)
+  s : ParallelogramBody with: (init => make-instance(`s, SquareBody{_, 7.0f, true}))
+  t : TriangleBody with: (init => make-instance(`t, EqualateralTriangleBody))
+  entities : Tuple<Entity> with: (as-method => true, init => [s, t])
+  cost : Exp with: (as-method => true, init => sum $ [
+    OnLineConstraint(exp(ab(s)), exp(ab(t)), Const(0.0f)),
+    OnLineConstraint(exp(c(s)), exp(bc(t)), Const(0.0f)),
+    OnLineConstraint(exp(d(s)), exp(ca(t)), Const(0.0f)) ])
+
+defstruct PolygonBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float
+  fixed? : True|False
+  n : Int
+  poly : Polygon with: (init => polygon-n(16.0f, n))
+  ; points : Tuple<V3f> with: (init => to-tuple $ for i in 0 to n seq : V3f(to-float(i), 0.0f, 0.0f) + 0.5f * V3f(rndf(-1.0f, 1.0f), rndf(-1.0f, 1.0f)))
+  len : SymVar with: (init => SymVar(`len, init-len, not fixed?))
+  ; vertices : Tuple<Vertex> with: (init => to-tuple $ for (p in points, i in 0 to false) seq :
+  vertices : Tuple<Vertex> with: (init => to-tuple $ for (p in vertices(contours(poly)[0]), i in 0 to false) seq :
+    Vertex(symbol-join([to-char(to-int('a') + i)]), xyz(p)))
+  edges : Tuple<Edge> with: (init => to-tuple $ for [f,t] in successive-pairs-wrapped(vertices) seq :
+    Edge(symbol-join([vertex-name(f) vertex-name(t)]), f, t, false, true))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat-all $ [[len], vertices, edges])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => sum $
+    [ EqualLengthConstraint(map(exp, edges)), EdgeLengthConstraint( exp(edges[0]), exp(len)) ])
+
+defstruct CircleBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-radius : Float
+  fixed? : True|False with: (default => false)
+  ref? : True|False with: (default => false)
+  measure? : True|False with: (default => false)
+  r : SymVar with: (init => SymVar(`radius, init-radius, not fixed?))
+  circle : Circle with: (init => Circle(`circle, Vertex(`center, V3f(0.0f, 0.0f, 0.0f)), r, ref?, measure?))
+  entities : Tuple<Entity> with: (as-method => true, init => [ circle ])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => Const(0.0f))
+
+defn ProjectOntoCircle (v:Vertex, circle:Circle) -> Exp :
+  EdgeLengthConstraint(EdgeExp(exp(center(circle)), exp(v)), exp(radius(circle)))
+
+defstruct InscribedBody <: Module :
+  id : Symbol with: (as-method => true)
+  bt: Symbol -> Module
+  ct: Symbol -> CircleBody
+  b : Module with: (init => make-instance(`body, bt))
+  c : CircleBody with: (init => make-instance(`circle, ct))
+  entities : Tuple<Entity> with: (as-method => true, init => [b, c])
+  cost : Exp with: (as-method => true, updater => sub-cost, init =>
+    reduce(plus, for v in vertices(b) seq : ProjectOntoCircle(v, circle(c))))
+
+defn PentagonBody (name:Symbol, len:Float) :
+  InscribedBody(name, { PolygonBody(_, len, true, 5) }, { CircleBody(_, len, false, true, false) })
+
+defn ProjectOntoPlane (v:Vec3Exp, plane:PlaneExp) -> Exp :
+  sqerr(dot(normal(plane), v) - dot(normal(plane), center(plane)))
+
+defstruct PointsOnPlaneBody <: Module :
+  id : Symbol with: (as-method => true)
+  num : Int
+  vs : Tuple<Vertex> with: (init => to-tuple $ for i in 0 to num seq :
+    Vertex(symbol-join $ [`v i], false, rnd(dims-to-box $ xyz(5.0f)), false))
+  p : Plane with: (init => Plane(`p, Vertex(`p/center, true, z3f(3.0f), true), Vertex(`p/normal, true, z3f(1.0f), true)))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat(vs, [p]))
+  cost : Exp with: (as-method => true, init => sum $ for v in vs seq : ProjectOntoPlane(exp(v), exp(p)))
+  
+defstruct PyHatBody <: Module :
+  id : Symbol with: (as-method => true)
+  r : ParallelogramBody with: (init => make-instance(`r, { RectangleBody(`r, V2f(10.0f, 10.0f), false) }))
+  slot : ParallelogramBody with: (init => make-instance(`slot, { RectangleBody(`r, V2f(1.0f, 2.0f), true) }))
+  header : ParallelogramBody with: (init => make-instance(`header, { RectangleBody(`r, V2f(5.0f, 1.0f), true) }))
+  llc : CircleBody with: (init => make-instance(`llc, { CircleBody(`llc, 1.0f, true) }))
+  lrc : CircleBody with: (init => make-instance(`lrc, { CircleBody(`lrc, 1.0f, true) }))
+  ulc : CircleBody with: (init => make-instance(`ulc, { CircleBody(`ulc, 1.0f, true) }))
+  urc : CircleBody with: (init => make-instance(`urc, { CircleBody(`urc, 1.0f, true) }))
+  iw : Edge with: (init => Edge(`iw, center(circle(ulc)), center(circle(urc)), true, true))
+  ih : Edge with: (init => Edge(`ih, center(circle(ulc)), center(circle(llc)), true, true))
+  od : Edge with: (init => Edge(`od, center(circle(ulc)), d(r), true, true))
+  entities : Tuple<Entity> with: (as-method => true, init => [r, llc, lrc, ulc, urc, iw, ih, od, slot, header])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => sum $ [
+    SameVecConstraint([ mov-mat-exp(Const(V3f(  2.0f,  2.0f, 0.0f))) * exp(a(r)),                exp(center(circle(llc))) ])
+    SameVecConstraint([ mov-mat-exp(Const(V3f( -2.0f,  2.0f, 0.0f))) * exp(b(r)),                exp(center(circle(lrc))) ])
+    SameVecConstraint([ mov-mat-exp(Const(V3f(  2.0f, -2.0f, 0.0f))) * exp(d(r)),                exp(center(circle(ulc))) ])
+    SameVecConstraint([ mov-mat-exp(Const(V3f( -2.0f, -2.0f, 0.0f))) * exp(c(r)),                exp(center(circle(urc))) ])
+    SameVecConstraint([ mov-mat-exp(Const(V3f( 10.0f,  5.0f, 0.0f))) * exp(center(circle(llc))), exp(center(circle(urc))) ])
+    SameVecConstraint([ mov-mat-exp(Const(V3f( 10.0f, -5.0f, 0.0f))) * exp(center(circle(ulc))), exp(center(circle(lrc))) ])
+    SameVecConstraint([ mov-mat-exp(Const(V3f(  6.0f,  2.0f, 0.0f))) * exp(a(r)),                center(slot) ])
+    HorizontalConstraint(exp(ab(r)))
+    HorizontalConstraint(exp(ab(slot)))
+    HorizontalConstraint(exp(ab(header)))
+    SameConstraint(x(center(r)) x(center(header)))
+    SameConstraint(y(exp(center(circle(ulc)))) y(center(header)))
+    ])
+
+defn lineloop-vertices (loop:LineLoop, name:Symbol) -> Tuple<Vertex> :
+  to-tuple $ for (p in vertices(loop), i in 0 to false) seq :
+    Vertex(symbol-join([name i]), p)
+
+defn circle-edges (vertices:Tuple<Vertex>, name:Symbol) -> Tuple<Edge> :
+  to-tuple $ for ([f,t] in successive-pairs-wrapped(vertices), i in 0 to false) seq :
+    Edge(symbol-join([name i]), f, t)
+
+defn pairwise-edges (a-verts:Tuple<Vertex>, b-verts:Tuple<Vertex>, name:Symbol) -> Tuple<Edge> :
+  to-tuple $ for i in 0 to length(a-verts) seq :
+    Edge(symbol-join([name i]), a-verts[i], b-verts[i])
+
+defn diagonal-edges (a-verts:Tuple<Vertex>, b-verts:Tuple<Vertex>, name:Symbol) -> Tuple<Edge> :
+  to-tuple $ for i in 0 to length(a-verts) seq :
+    Edge(symbol-join([name i]), a-verts[i], b-verts[(i + 1) % length(a-verts)])
+
+defstruct TrussBody <: Module :
+  id : Symbol with: (as-method => true)
+  n : Int
+  z : Float with: (default => 0.0f)
+  d : Float with: (init => 5.0f)
+  upper-loop : LineLoop with: (init => mov-z(z) $ LineLoop $ seq(xyz, vertices(contours(polygon-n(16.0f, n))[0])))
+  lower-loop : LineLoop with: (init => mov-z(z) $ LineLoop $ seq(xyz, vertices(contours(polygon-n(8.0f, n))[0])))
+  upper-vertices : Tuple<Vertex> with: (init => lineloop-vertices(upper-loop, `uv))
+  lower-vertices : Tuple<Vertex> with: (init => lineloop-vertices(lower-loop, `lv))
+  upper-edges : Tuple<Edge> with: (init => circle-edges(upper-vertices, `ue))
+  lower-edges : Tuple<Edge> with: (init => circle-edges(lower-vertices, `le))
+  vertical-edges : Tuple<Edge> with: (init => pairwise-edges(upper-vertices, lower-vertices, `ve))
+  diagonal-edges : Tuple<Edge> with: (init => diagonal-edges(upper-vertices, lower-vertices, `de))
+  entities : Tuple<Entity> with: (as-method => true, init =>
+    to-tuple $ cat-all $ [upper-vertices, lower-vertices, upper-edges, lower-edges, vertical-edges, diagonal-edges])
+  cost : Exp with: (as-method => true, init => sum $ [
+    EdgeLengthConstraint(exp(upper-edges[0]), Const(4.0f))
+    EdgeLengthConstraint(exp(vertical-edges[0]), Const(1.0f))
+    EqualLengthConstraint(map(exp, upper-edges))
+    EqualLengthConstraint(map(exp, lower-edges))
+    EqualLengthConstraint(map(exp, vertical-edges))
+    EqualLengthConstraint(map(exp, diagonal-edges)) ])
+
+defstruct Truss3Body <: Module :
+  id : Symbol with: (as-method => true)
+  n : Int
+  d : Float with: (init => 5.0f)
+  nt : TrussBody with: (init => make-instance(`nt, TrussBody{_, n, -0.5f * d}))
+  pt : TrussBody with: (init => make-instance(`pt, TrussBody{_, n,  0.5f * d}))
+  top-cross-edges : Tuple<Edge> with: (init => pairwise-edges(upper-vertices(nt), upper-vertices(pt), `tce))
+  bot-cross-edges : Tuple<Edge> with: (init => pairwise-edges(lower-vertices(nt), lower-vertices(pt), `bce))
+  top-diag-edges : Tuple<Edge> with: (init => diagonal-edges(upper-vertices(nt), upper-vertices(pt), `tde))
+  bot-diag-edges : Tuple<Edge> with: (init => diagonal-edges(lower-vertices(nt), lower-vertices(pt), `tde))
+  entities : Tuple<Entity> with: (as-method => true, init =>
+    to-tuple $ cat-all $ [[nt, pt], top-cross-edges, bot-cross-edges, top-diag-edges, bot-diag-edges])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => sum $ [ 
+    EdgeLengthConstraint(exp(top-cross-edges[0]), Const(1.0f))
+    EdgeLengthConstraint(exp(bot-cross-edges[0]), Const(1.0f))
+    EqualLengthConstraint(map(exp, top-cross-edges))
+    EqualLengthConstraint(map(exp, bot-cross-edges))
+    ])
+
+defstruct BaseScissorsBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float
+  c : MidPointLineBody with: (init => make-instance(`c, MidPointLineBody{_, init-len}))
+  d : MidPointLineBody with: (init => make-instance(`d, MidPointLineBody{_, init-len}))
+  entities : Tuple<Entity> with: (as-method => true, init => [c, d])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => sum $ [
+    SameVertexConstraint $ [mid(c), mid(d)]
+    SameConstraint(exp(len(l(c))), exp(len(l(d))))
+    ])
+
+defstruct ScissorsBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float
+  init-ang : Float
+  fixed? : True|False
+  bs : BaseScissorsBody with: (init => make-instance(`s, BaseScissorsBody{_, init-len}))
+  theta : SymVar with: (init => SymVar(`theta, init-ang, not fixed?))
+  angle : Angle with: (init => Angle(`a, ab(l(c(bs))), ab(l(d(bs))), true))
+  entities : Tuple<Entity> with: (as-method => true, init => [bs, theta, angle])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => AngleConstraint(angle, exp(theta)))
+
+defstruct TwoScissorsBody <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float
+  init-ang : Float
+  fixed? : True|False
+  s0 : BaseScissorsBody with: (init => make-instance(`s0, BaseScissorsBody{_, init-len}))
+  s1 : BaseScissorsBody with: (init => make-instance(`s1, BaseScissorsBody{_, init-len}))
+  theta : SymVar with: (init => SymVar(`theta, init-ang, not fixed?))
+  angle : Angle with: (init => Angle(`a, ab(l(c(s0))), ab(l(d(s0))), true))
+  entities : Tuple<Entity> with: (as-method => true, init => [s0, s1, theta, angle])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => sum $ [
+    AngleConstraint(angle, exp(theta))
+    SameVecConstraint([exp(b(l(d(s0)))), exp(a(l(c(s1))))])
+    SameVecConstraint([exp(b(l(c(s0)))), exp(a(l(d(s1))))])
+    ])
+
+defstruct MultiScissorsBody <: Module :
+  id : Symbol with: (as-method => true)
+  num : Int
+  init-len : Float
+  init-ang : Float
+  fixed? : True|False
+  scissors : Tuple<BaseScissorsBody> with: (init => to-tuple $ for i in 0 to num seq :
+    within matrix(mov-mat44f(V3f((to-float(i) - 0.5f * to-float(num - 1)) * init-len , 0.0f, 0.0f))) :
+      make-instance(symbol-join $ [`s i], BaseScissorsBody{_, init-len}) )
+  theta : SymVar with: (init => SymVar(`theta, init-ang, not fixed?))
+  angle : Angle with: (init => Angle(`a, ab(l(c(scissors[0]))), ab(l(d(scissors[0]))), true))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat-all $ [scissors, [theta, angle]])
+  cost : Exp with: (as-method => true, updater => sub-cost, init => sum $ [
+    AngleConstraint(angle, exp(theta))
+    sum $ for [p, n] in successive-pairs(scissors) seq-cat : [
+      SameVecConstraint([exp(b(l(d(p)))), exp(a(l(c(n))))])
+      SameVecConstraint([exp(b(l(c(p)))), exp(a(l(d(n))))]) ]
+    ])
+
+defstruct MultiLineBody <: Module :
+  id : Symbol with: (as-method => true)
+  num-lines : Int
+  rnd-radius : Float with: (default => 1.0f)
+  lines : Tuple<LineBody> with: (init => to-tuple $ for i in 0 to num-lines seq :
+    make-instance(symbol-join $ [`l i], LineBody{_, 7.0f, rnd-radius}))
+  entities : Tuple<Entity> with: (as-method => true, init => lines)
+  cost : Exp with: (as-method => true, init => sum $ 
+    for [p, n] in successive-pairs(lines) seq :
+      Const(4.0f) * SameVertexConstraint( [b(p), a(n)] ))
+
+defstruct ArmBody <: Module :
+  id : Symbol with: (as-method => true)
+  num-links : Int
+  init-len : Float
+  links : MultiLineBody with: (init => make-instance(`links, MultiLineBody{_, num-links, init-len}))
+  base-angle : SymVar with: (init => SymVar(`base-angle, PI-F / 4.0f))
+  elbow-angles : Tuple<SymVar> with: (init => to-tuple $ for i in 0 to num-links seq :
+    SymVar(symbol-join $ [`elbow-angle i], (1.0f when ((i % 2) == 0) else -1.0f) * PI-F / 4.0f))
+  elbow-angs : Tuple<Angle> with: (init => to-tuple $ for ([p, n] in successive-pairs(lines(links)), i in 1 to false) seq :
+    Angle(symbol-join $ [`elbow-ang i], a(p), b(p), b(n), a(n), true))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat-all $ [[links, base-angle], elbow-angles, elbow-angs])
+  cost : Exp with: (as-method => true, init => sum $ cat-all $ [
+    for (ang in elbow-angs, angle in elbow-angles) seq :
+      AngleConstraint(ang, exp(angle))
+    [ EdgeAngleConstraint(exp(a(lines(links)[0])) - exp(b(lines(links)[0])), Const(x3f(1.0f)), exp(base-angle)) ] ])
+
+defn tip (a:ArmBody) -> Vertex :
+  b(last(lines(links(a))))
+
+defstruct ArmBodies <: Module :
+  id : Symbol with: (as-method => true)
+  init-len : Float with: (init => 5.0f)
+  num-arms : Int
+  num-links : Int
+  arms : Tuple<ArmBody> with: (init => to-tuple $ for i in 0 to num-arms seq :
+    within matrix(mov-mat44f(V3f(0.0f, (to-float(i) - 0.5f * to-float(num-arms - 1)) * init-len, 0.0f))) :
+      make-instance(symbol-join $ [`arm i], ArmBody{_, num-links, init-len}))
+  inner-circle : CircleBody with: (init => make-instance(`inner-circle, CircleBody{_, 2.0f, true, true, false}))
+  outer-circle : CircleBody with: (init => make-instance(`outer-circle, CircleBody{_, 10.0f, true, true, false}))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat-all $ [arms, [inner-circle, outer-circle]])
+  cost : Exp with: (as-method => true, init => sum $ cat-all $ [
+    for arm in arms seq-cat :
+      val lines = lines(links(arm))
+      [ ProjectOntoCircle(a(lines[0]), circle(outer-circle)), ProjectOntoCircle(b(last(lines)), circle(inner-circle)) ]
+    ;Separation between successive arm end points
+    for [prev-arm, next-arm] in successive-pairs(arms) seq-cat :
+      val prev-lines = lines(links(prev-arm))
+      val next-lines = lines(links(next-arm))
+      [ EdgeLengthConstraint(EdgeExp(exp(a(prev-lines[0])), exp(a(next-lines[0]))), Const(4.0f))
+        Const(2.0f) * EdgeLengthConstraint(EdgeExp(exp(a(last(prev-lines))), exp(a(last(next-lines)))), Const(2.0f)) ]
+    ])
+      
+
+defstruct DancerBody <: Module :
+  id : Symbol with: (as-method => true)
+  num-arms : Int
+  num-links : Int
+  arms : Tuple<ArmBody> with: (init => to-tuple $ for i in 0 to num-arms seq :
+    make-instance(symbol-join $ [`arm i], ArmBody{_, num-links, 5.0f}))
+  entities : Tuple<Entity> with: (as-method => true, init => arms)
+  cost : Exp with: (as-method => true, init => sum $ [
+    SameVertexConstraint(to-tuple $ for arm in arms seq : a(lines(links(arm))[0])),
+    CenterXConstraint(to-tuple $ seq(exp, cat-all $ seq(all-vertices, arms)),
+                      exp(b(last(lines(links(arms[0])))))) ])
+
+defstruct GroundedDancerBody <: Module :
+  id : Symbol with: (as-method => true)
+  num-arms : Int
+  num-links : Int
+  arm-len : Float
+  body : DancerBody with: (init => make-instance(`body, DancerBody{_, num-arms, num-links}))
+  entities : Tuple<Entity> with: (as-method => true, init => [ body ])
+  cost : Exp with: (as-method => true, init => sum $ 
+    cat-all $ [ [ SameVecConstraint([ exp(b(last(lines(links(arms(body)[0]))))), Const(V3f(0.0f, -8.0f, 0.0f))]) ]
+                for arm in arms(body) seq-cat : for line in lines(links(arm)) seq: EdgeLengthConstraint(exp(ab(line)), Const(arm-len)) ])
+
+defn leg (a:DancerBody) -> ArmBody :
+  arms(a)[0]
+
+defn right-arm (a:DancerBody) -> ArmBody :
+  arms(a)[1]
+
+defn left-arm (a:DancerBody) -> ArmBody :
+  last(arms(a))
+
+defn wrist (a:ArmBody) -> LineBody :
+  last(lines(links(a)))
+
+defn ankle (a:ArmBody) -> LineBody :
+  wrist(a)
+
+defn base (a:ArmBody) -> LineBody :
+  lines(links(a))[0]
+
+defstruct DancerBodies <: Module :
+  id : Symbol with: (as-method => true)
+  num-dancers : Int
+  num-arms : Int
+  num-links : Int
+  dancers : Tuple<DancerBody> with: (init => to-tuple $ for i in 0 to num-dancers seq :
+    make-instance(symbol-join $ [`dancer i], DancerBody{_, num-arms, num-links}))
+  leg-edges : Tuple<Edge> with: (init => to-tuple $ for ([p, n] in successive-pairs-wrapped(dancers), i in 0 to false) seq :
+    Edge(symbol-join $ [`le, i], tip(leg(p)), tip(leg(n)), true, false))
+  arm-edges : Tuple<Edge> with: (init => to-tuple $ for ([p, n] in successive-pairs-wrapped(dancers), i in 0 to false) seq :
+    Edge(symbol-join $ [`ae, i], tip(right-arm(p)), tip(left-arm(n)), true, false))
+  entities : Tuple<Entity> with: (as-method => true, init => to-tuple $ cat-all $ [dancers, leg-edges, arm-edges])
+  cost : Exp with: (as-method => true, init => Const(0.0f), updater => sub-cost)
+
+defstruct BindBody <: Module :
+  id : Symbol with: (as-method => true)
+  ; bind-vars : Tuple<AnyVar> ; with: (as-method => true)
+  vars : Tuple<AnyVar> with: (as-method => true)
+  mod : Module
+  entities : Tuple<Entity> with: (as-method => true)
+  cost : Exp with: (as-method => true)
+
+defn pulse (x:Exp, s:Exp, e:Exp) -> Exp :
+  threshold(x, s) * (Const(1.0f) - threshold(x, e))
+
+defn threshold (x:Exp, t:Exp) -> Exp :
+  sigmoid(x - t)
+
+defn sigmoid (x:Exp) -> Exp :
+  Const(1.0f) / (Const(1.0f) + exp(Const(-1.0f) * x))
+
+defn theta (period:Float, time:SymVar) -> Exp :
+  Const(2.0f * PI-F / period) * exp(time)
+
+defn wave (min:Float, max:Float, period:Float, time:SymVar) -> Exp :
+  val r = max - min
+  Const(r / 2.0f) * Sin(theta(period, time)) + Const(min)
+
+defn radar (radius:Float, period:Float, time:SymVar) -> Vec3Exp :
+  val theta = theta(period, time)
+  Vec3Exp(Const(radius) * cos(theta), Const(radius) * sin(theta), Const(0.0f))
+
+defn TimeParallelogram (id:Symbol, time:SymVar) -> ParallelogramBody :
+  val dims = V2f(4.0f, 5.0f)
+  val pg = ParallelogramBody(id, dims, false, rectangle-corners(dims))
+  val p0 = pulse(exp(time), Const(0.0f), Const(10.0f))
+  val p1 = pulse(exp(time), Const(10.0f), Const(20.0f))
+  val nr = sub-cost(pg, cost(pg) + p0 * AngleConstraint(ang(pg), Const(PI-F / 4.0f)) + p1 * AngleConstraint(ang(pg), Const(PI-F / 2.0f)))
+  sub-entities(nr, to-tuple $ cat(entities(nr), [ time ]))
+
+; defn PolyLinePath (name:Symbol, poly:PolyLine3f) -> Vertex :
+;   val stroke = strokes(poly)[0]
+;   defn index (i:Int) : i % length(stroke)
+;   defn elt (i:Int, dim:Int) : (stroke[index(i)])[dim]
+;   defn nm (i:Symbol) : add-suffix(name, i)
+;   Vertex(name, true,
+;          SymVar(nm(`x), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 0))),
+;          SymVar(nm(`y), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 1))),
+;          SymVar(nm(`z), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 2))))
+
+defn interval-bsearch (elts:Tuple<Float>, x:Float) -> Int :
+  let loop (l:Int = 0, r:Int = length(elts) - 1) :
+    if r >= l :
+      val mid = l + (r - l) / 2
+      if elts[mid] == x :
+        mid
+      else if elts[mid] < x :
+        loop(mid + 1, r)
+      else :
+        loop(l, mid - 1)
+    else :
+      max(0, l - 1)
+
+; TODO: ONLY ONE STROKE FOR NOW
+; TODO: REDO POLYLINE3f to have LineString3f as elements
+defn PolyLinePath (name:Symbol, poly:PolyLine3f, speed:Float) -> Vertex :
+  val stroke = strokes(poly)[0]
+  val segs:Tuple<[V3f,V3f]> = to-tuple $ successive-pairs(stroke)
+  val sums = to-tuple $ cat([0.0f], cumsum $ seq(fn (seg) : distance(seg[0], seg[1]), segs))
+  val tot-len = last(sums)
+  var last-tick:Int = -1
+  var last-pt:V3f = V3f(0.0f, 0.0f, 0.0f)
+  defn pt-of (tick:Int, it:Float) -> V3f :
+    val t = speed * it
+    if tick == last-tick :
+      last-pt
+    else :
+      val dist  = t % tot-len
+      val idx   = interval-bsearch(sums, dist)
+      val seg   = segs[idx]
+      val start = seg[0]
+      val end   = seg[1]
+      val off   = dist - sums[idx]
+      val dir   = normalize(end - start) 
+      val pt    = start + off * dir
+      ; println("TICK %_: T %_ TOT-LEN %_ DIST %_ IDX %_ START %_ END %_ OFF %_ DIR %_ PT %_" %
+      ;   [ tick, t, tot-len, dist, idx, start, end, off, dir, pt])
+      last-tick = tick
+      last-pt   = pt
+      pt
+  defn elt (tick:Int, t:Float, dim:Int) : pt-of(tick, t)[dim]
+  defn nm (i:Symbol) : add-suffix(name, i)
+  Vertex(name, true,
+         SymVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
+         SymVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1))),
+         SymVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
+
+defn BindBody<?T> (name:Symbol, mod:?T&Module,
+                   constraints:T -> Seqable<Exp>, 
+                   bindings:T -> Seqable< KeyValue<AnyVar|Vertex, Exp|Vec3Exp> >, new-vars:Tuple<AnyVar>) :
+  val binding-sum = sum $ for b in bindings(mod) seq :
+    sum $ for (v in vars(key(b)), e in exps(value(b))) seq : SameConstraint(exp(v), e)
+  BindBody(name,
+    new-vars,
+    mod,
+    to-tuple $ cat(new-vars, [ mod ]),
+    binding-sum + (sum $ constraints(mod)))
+
+defn BindBody<?T> (name:Symbol, mod:?T&Module,
+                   bindings:T -> Seqable< KeyValue<AnyVar|Vertex, Exp|Vec3Exp> >, new-vars:Tuple<AnyVar>) :
+  BindBody(name, mod, { [] }, bindings, new-vars)
+
+; defn BindBodyOld<?T> (name:Symbol, mod:?T&Module, get-vars:T -> Seqable<SymVar>, exps:Seqable<Exp>, vars:Tuple<SymVar>) :
+;   val mod-vars = to-tuple $ get-vars(mod)
+;   BindBody(name, vars, mod, to-tuple $ cat(vars, [ mod ]), sum $ seq(SameConstraint{exp(_), _}, mod-vars, exps))
+
+defn BindSquareBody (name:Symbol, init-len:Float) -> BindBody :
+  BindBody(`sb, SquareBody(`rsb, init-len, false), fn (m) : [ width(m) => Variable(`len) ], [ SymVar(`len, init-len, false) ])
+
+; defn BindSquareBody (name:Symbol, init-len:Float) -> BindBody :
+;   BindBody(`sb, SquareBody(`rsb, init-len, false), fn (m) : [ width(m) ], [ Variable(`len) ], [ SymVar(`len, init-len, false) ])
+
+defn TimeSquareBody (name:Symbol, init-len:Float, time:SymVar) -> BindBody :
+  BindBody(`tsb, SquareBody(`rsb, init-len, false), fn (m) : [ width(m) => wave(5.0f, 15.0f, 4.0f, time) ], [ time ])
+
+defn TimeTranslateSquareBody (name:Symbol, init-len:Float, time:SymVar) -> BindBody :
+  BindBody(`ttsb, TranslateSquareBody(`rsb, init-len), fn (m) : [ width(s0(m)) => wave(6.0f, 10.0f, 4.0f, time) ], [ time ])
+
+defn TimeTwoScissorsBody (name:Symbol, init-len:Float, time:SymVar) -> BindBody :
+  BindBody(`ttsb, TwoScissorsBody(`rsb, init-len, 0.0f, false), fn (m) : [ theta(m) => wave(PI-F / 4.0f, PI-F / 2.0f, 4.0f, time) ], [ time ])
+
+defn TimeMultiScissorsBody (name:Symbol, num:Int, init-len:Float, time:SymVar) -> BindBody :
+  BindBody(`tmsb, MultiScissorsBody(`rsb, num, init-len, 0.0f, false),
+           fn (m) : [ theta(m) => wave(PI-F / 4.0f, PI-F / 2.0f, 4.0f, time) ], [ time ])
+
+defn TimeScissorsBody (name:Symbol, init-len:Float, time:SymVar) -> BindBody :
+  BindBody(`tsb, ScissorsBody(`tsb, init-len, 0.0f, false), fn (m) : [ theta(m) => wave(PI-F / 4.0f, PI-F / 2.0f, 0.1f, time) ], [ time ])
+
+defn TimeArmBody (name:Symbol, num-links:Int, time:SymVar) -> BindBody :
+  BindBody(`tsb, ArmBody(`tab, num-links, 5.0f),
+           fn (m) : [
+             base-angle(m) => Const(PI-F / 4.0f),
+             elbow-angles(m)[0] => wave(PI-F / 4.0f, PI-F / 2.0f, 5.0f, time),
+             len(lines(links(m))[0]) => Const(5.0f),
+             len(lines(links(m))[1]) => Const(5.0f),
+             a(lines(links(m))[0]) => Const(xyz(0.0f))
+             ]
+           [ time ])
+
+
+defn RadarArmBody (name:Symbol, num-links:Int, time:SymVar) -> BindBody :
+  BindBody(`rsb, ArmBody(`rsb, num-links, 5.0f),
+           fn (m:ArmBody) :
+             cat-all $ [ for line in lines(links(m)) seq : len(line) => Const(8.0f / to-float(num-links))
+                         [ a(lines(links(m))[0]) => Const(xyz(0.0f)),
+                           b(lines(links(m))[0]) => radar(3.5f, 5.0f, time) + Const(y3f(4.0f)) ] ]
+           [ time ])
+
+defn RadarArmBodies (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, time:SymVar) -> BindBody :
+  BindBody(`tsbs, ArmBodies(`rsb, num-arms, num-links),
+           fn (m) : cat-all $ [ for arm in arms(m) seq-cat : for line in lines(links(arm)) seq : len(line) => Const(desired-len)
+                                [ center(circle(inner-circle(m))) => radar(4.0f, 5.0f, time), 
+                                  center(circle(outer-circle(m))) => Const(xyz(0.0f)) ] ]
+           [ time ])
+
+; defn TimeDancerBody (name:Symbol, num-arms:Int, num-links:Int, time:SymVar) -> BindBody :
+;   val desired-len = 4.0f
+;   BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+;            fn (m) : cat-all $ [[ y(sv(b(last(lines(links(arms(m)[0]))))))
+;                                  y(sv(b(last(lines(links(last(arms(m)))))))) ]
+;                                for arm in arms(m) seq-cat :
+;                                  for line in lines(links(arm)) seq: len(line),
+;                                vars(b(last(lines(links(arms(m)[1]))))) ],
+;            cat-all $ [[ Const(-8.0f), Const(8.0f) ],
+;                       for i in 0 to num-arms seq-cat : for i in 0 to num-links seq : Const(desired-len),
+;                       exps(radar(6.0f, 5.0f, time)) ],
+;            [ time ])
+
+; defn TimeDancerBody (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+;   BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+;            fn (m) :
+;              cat-all $ [ [ b(last(lines(links(arms(m)[0])))) => Const(V3f(0.0f, -8.0f, 0.0f))
+;                            b(last(lines(links(arms(m)[1])))) => radar(radius, 5.0f, time) ]
+;                          for arm in arms(m) seq-cat : for line in lines(links(arm)) seq: len(line) => Const(desired-len) ]
+;            [ time ])
+
+#for (Prim in [Float Float]
+      Vec in [V2f V3f]
+      Stroke in [Stroke2f Stroke3f]
+      LineSegment in [LineSegment2f LineSegment3f]
+      Box in [Box2f Box3f]
+      neg-inf-box in [neg-inf-box2f neg-inf-box3f]
+      StrokeName in ["Stroke2f" "Stroke3f"]) :
+
+  public defstruct Stroke <: AnyShape&Equalable :
+    state: AnyShapeState with: (as-method => true)
+    points: Tuple<Vec>
+
+  defn Stroke (points:Seqable<Vec>) :
+    Stroke(default-anyshape-state(), to-tuple $ points)
+
+  defmethod equal? (a:Stroke, b:Stroke) -> True|False :
+    points(a) == points(b)
+
+  defmethod xyz (mat:Mat44f, s:Stroke) -> Stroke :
+    Stroke(state(s), for v in points(s) map : mat * v)
+
+  defmethod print (o:OutputStream, c:Stroke) :
+    print(o, "%_(%_)" % [StrokeName points(c)])
+
+  public defn cat (s1:Stroke, s2:Stroke) -> Stroke :
+    Stroke(cat(points(s1), points(s2)))
+
+  defmethod bounds (p:Stroke) -> Box3f :
+    xyz(reduce(union, neg-inf-box(), seq(Box, points(p))))
+
+  public defn segments (s:Stroke) -> Seq<LineSegment> :
+    val pts = points(s)
+    for i in 0 to (length(pts) - 1) seq :
+      LineSegment(pts[i], pts[i + 1])
+
+defn to-stroke3f (s:Stroke2f) -> Stroke3f :
+  Stroke3f(state(s), for v in points(s) map: xyz(v))
+
+defn to-polyline3f (s:Stroke3f) -> PolyLine3f :
+  PolyLine3f(state(s), [points(s)])
+
+defstruct Arc :
+  center : V2f
+  radius : Float
+  angle : Float       ; degrees
+  start-angle : Float ; degrees
+
+defn sample (arc:Arc, delta:Float) -> Stroke2f :
+  val r = radius(arc)
+  val n = round(angle(arc) / delta)
+  val inc = angle(arc) / n
+  Stroke2f $ for i in 0 to (to-int(n) + 1) seq :
+    val a = degrees-to-radians(start-angle(arc) + to-float(i) * inc)
+    center(arc) + V2f(r * cos(a), r * sin(a))
+
+defn double-you (radius:Float) -> Stroke2f :
+  val you1 = sample(Arc(xy(0.0f), radius, 180.0f, 0.0f), 15.0f)
+  cat(you1, reflect-x $ you1)
+
+defn repeat-first-point (pts:Tuple<V3f>) -> Tuple<V3f> :
+  to-tuple $ cat(pts, [pts[0]])
+
+val square-path = PolyLine3f $ [ repeat-first-point $ [
+  V3f(-1.0f, -1.0f, 0.0f), V3f(1.0f, -1.0f, 0.0f), V3f(1.0f, 1.0f, 0.0f),   V3f(-1.0f, 1.0f, 0.0f)]]
+
+val cube-path = PolyLine3f $ [ repeat-first-point $ [
+  V3f(-1.0f, -1.0f, -1.0f), V3f(1.0f, -1.0f, 1.0f), V3f(1.0f, 1.0f, -1.0f),   V3f(-1.0f, 1.0f, 1.0f)]]
+
+val square-you = PolyLine3f $ [ repeat-first-point $ [
+    V3f(-1.0f, 1.0f, 0.0f), V3f(-1.0f, -1.0f, 0.0f), V3f(1.0f, -1.0f, 0.0f), V3f(1.0f, 1.0f, 0.0f)
+    V3f(1.0f, -1.0f, 0.0f), V3f(-1.0f, -1.0f, 0.0f) ]]
+
+val round-you = to-polyline3f $ to-stroke3f $ reflect-y $ double-you(1.0f)
+val circle-line = to-polyline3f $ to-stroke3f $ sample(Arc(xy(0.0f), 1.0f, 360.0f, 0.0f), 15.0f)
+
+defn TimeKinematics (name:Symbol, radius:Float, time:SymVar) -> BindBody :
+  val path = PolyLinePath(`path, mag(xyz(radius)) $ square-path, 4.0f)
+  BindBody(`tkb, KinematicsExpBody2(`tab),
+           fn (m) : []
+           fn (m) : cat-all $ [ [ c(m) => exp(path) ] ]
+           to-tuple $ cat-all $ seq(vars, [path]))
+
+defn TimeExpKinematics (name:Symbol, radius:Float, time:SymVar) -> BindBody :
+  val path = PolyLinePath(`path, mag(xyz(radius)) $ square-path, 4.0f)
+  BindBody(`tkb, KinematicsExpBody(`main, robot-arm-exp-spec2),
+           fn (m) : []
+           fn (m) : cat-all $ [ [ vertex-table(m)[`hand] => exp(path) ] ]
+           to-tuple $ cat-all $ seq(vars, [path]))
+
+defn TimeLeg (name:Symbol, radius:Float, time:SymVar) -> BindBody :
+  val path = PolyLinePath(`path, mag(xyz(radius)) $ square-path, 4.0f)
+  val body = KinematicsBody(`main, robot-leg-spec)
+  BindBody(`tkb, body,
+           fn (m) : []
+           fn (m) : cat-all $ [
+             [ a(links(m)[0]) => Const(V3f(0.0f, 0.0f, 0.0f))
+               b(last(links(m))) => exp(path) ]
+             ]
+           to-tuple $ cat-all $ seq(vars, [path]))
+
+defn TimeDancerBody1a (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+  val path1 = PolyLinePath(`path1, mag(xyz(2.0f * radius)) $ cube-path, 16.0f)
+  BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+           fn (m) : []
+           fn (m) :
+             cat-all $ [ [ b(ankle(leg(m))) => Const(V3f(0.0f, -8.0f, 0.0f))
+                           b(wrist(right-arm(m))) => exp(path1)
+                           ]
+                         for arm in arms(m) seq-cat : for line in lines(links(arm)) seq:
+                           len(line) => Const(desired-len) ]
+           to-tuple $ cat-all $ seq(vars, [path1]))
+
+defn TimeDancerBody1b (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+  val path1 = PolyLinePath(`path1, mov-y(0.0f) $ mag(xyz(2.75f * radius)) $ round-you, 16.0f)
+  BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+           fn (m) : []
+           fn (m) :
+             cat-all $ [ [ b(ankle(leg(m))) => Const(V3f(0.0f, -8.0f, 0.0f))
+                           b(wrist(right-arm(m))) => exp(path1) ]
+                         for arm in arms(m) seq-cat : for line in lines(links(arm)) seq:
+                           len(line) => Const(desired-len) ]
+           to-tuple $ cat-all $ seq(vars, [path1]))
+
+defn TimeDancerBody1c (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+  val path1 = PolyLinePath(`path1, mov-y(0.0f) $ mag(xyz(2.0f * radius)) $ round-you, 16.0f)
+  BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+           fn (m) : [ HorizontalConstraint(exp(ab(wrist(right-arm(m))))) ]
+           fn (m) :
+             cat-all $ [ [ b(ankle(leg(m))) => Const(V3f(0.0f, -8.0f, 0.0f))
+                           a(wrist(right-arm(m))) => exp(path1)
+                           ]
+                         for arm in arms(m) seq-cat : for line in lines(links(arm)) seq:
+                           len(line) => Const(desired-len) ]
+           to-tuple $ cat-all $ seq(vars, [path1]))
+
+defn TimeDancerBody2 (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+  val path1 = PolyLinePath(`path1, mag(xyz(2.0f * radius)) $ cube-path, 8.0f)
+  ; val path2 = PolyLinePath(`path2, mov-y(-3.0f) $ mag(xyz(1.5f * radius)) $ round-you, 16.0f)
+  val path2 = PolyLinePath(`path2, mov-y(0.0f) $ mag(xyz(1.5f * radius)) $ round-you, 16.0f)
+  BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+           fn (m) :
+             [ HorizontalConstraint(exp(ab(wrist(left-arm(m)))))
+             ]
+           fn (m) :
+             cat-all $ [ [ b(ankle(leg(m))) => Const(V3f(0.0f, -8.0f, 0.0f))
+                           ; y(b(ankle(leg(m)))) => Const(-8.0f)
+                           b(wrist(right-arm(m))) => exp(path1)
+                           a(wrist(left-arm(m))) => exp(path2)
+                           ]
+                         for arm in arms(m) seq-cat : for line in lines(links(arm)) seq:
+                           len(line) => Const(desired-len) ]
+           to-tuple $ cat-all $ seq(vars, [path1, path2]))
+
+defn TimeDancerBody3 (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+  val path1 = PolyLinePath(`path1, mag(xyz(2.0f * radius)) $ cube-path, 8.0f)
+  val path2 = PolyLinePath(`path2, mov-y(-3.0f) $ mag(xyz(1.5f * radius)) $ round-you, 16.0f)
+  val path3 = PolyLinePath(`path3, mov-y(-1.0f) $ mag(xyz(0.5f * radius)) $ circle-line, 4.0f)
+  BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+           fn (m) :
+             [ HorizontalConstraint(exp(ab(wrist(left-arm(m)))))
+             ]
+           fn (m) :
+             cat-all $ [ [ b(ankle(leg(m))) => Const(V3f(0.0f, -8.0f, 0.0f))
+                           ; y(b(ankle(leg(m)))) => Const(-8.0f)
+                           b(wrist(right-arm(m))) => exp(path1)
+                           b(wrist(left-arm(m))) => exp(path2)
+                           ; a(wrist(left-arm(m))) => exp(path2)
+                           a(base(left-arm(m))) => exp(path3)
+                           ]
+                         for arm in arms(m) seq-cat : for line in lines(links(arm)) seq:
+                           len(line) => Const(desired-len) ]
+           to-tuple $ cat-all $ seq(vars, [path1, path2, path3]))
+
+defn TimeDancerBodies (name:Symbol, num-dancers:Int, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+  val dbs0 = DancerBodies(`tab, num-dancers, num-arms, num-links),
+  val dbs  = sub-cost(dbs0, sum $ [
+                sum $ for [p, n] in successive-pairs-wrapped(dancers(dbs0)) seq :
+                        sqerr(Const(2.0f * desired-len) -
+                              distance(exp(tip(right-arm(p))), exp(tip(left-arm(n))))) + 
+                        sqerr(Const(6.0f * desired-len) -
+                              distance(exp(tip(leg(p))), exp(tip(leg(n))))),
+                sum $ for (d in dancers(dbs0), i in 0 to false) seq :
+                        sqerr(Const(-8.0f) - y(exp(tip(leg(d)))))
+                ])
+  val r = radius
+  val pline = mov-y(2.0f) $ mag(xyz(r)) $ cube-path
+  val path1 = PolyLinePath(`path1, pline, 8.0f)
+  BindBody(`tdbs, dbs,
+           fn (m) :
+             cat-all $ [ for dancer in dancers(m) seq-cat :
+                           for arm in arms(dancer) seq-cat :
+                             for line in lines(links(arm)) seq:
+                               len(line) => Const(desired-len),
+                         [ tip(right-arm(dancers(m)[0])) => exp(path1) ] ]
+           ; [ time ]
+           to-tuple $ vars(path1)
+           )
+
+; defn TimePolyDancerBody (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+;   ; val poly = to-polyline2f $ polygon-n(2.0f * radius, 128))
+;   ; val poly = polygon-n(2.0f * radius, 4)
+;   ; val poly = Polygon([Contour $ [V2f(-10.0f, -10.0f), V2f(10.0f, -10.0f), V2f(10.0f, 10.0f), V2f(-10.0f, 10.0f)]])
+;   ; val pline = to-polyline3f $ to-polyline2f $ poly
+;   ; val poly = polygon-n(2.0f * radius, 4)
+;   val r = radius
+;   val pline = PolyLine3f $ [[
+;     r * V3f(-1.0f, -1.0f, -1.0f), r * V3f(1.0f, -1.0f, 1.0f), r * V3f(1.0f, 1.0f, -1.0f), r * V3f(-1.0f, 1.0f, 1.0f)]]
+;   val line = cubic-interpolate-wrapped(pline, 16)
+;   val path = PolyLinePath(`path, line, 1.0f)
+;   BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+;            fn (m) : cat-all $ [[ b(last(lines(links(arms(m)[0])))) => Const(V3f(0.0f, 0.0f, -8.0f)),
+;                                  b(last(lines(links(arms(m)[1])))) => exp(path) ]
+;                                for arm in arms(m) seq-cat :
+;                                  for line in lines(links(arm)) seq: len(line) => Const(desired-len),
+;                                ]
+;            vars(path))
+; 
+; defn TimePoly2DancerBody (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float, radius:Float, time:SymVar) -> BindBody :
+;   val path0 = PolyLinePath(`path0, to-polyline3f $ to-polyline2f $ polygon-n(2.0f * radius, 128), 1.0f)
+;   val path1 = PolyLinePath(`path1, reflect-xz $ to-polyline3f $ to-polyline2f $ polygon-n(2.0f * radius, 128), 1.0f)
+;   BindBody(`tdb, DancerBody(`tab, num-arms, num-links),
+;            fn (m) : cat-all $ [ [ b(last(lines(links(arms(m)[0])))) => Const(V3f(0.0f, 0.0f, -8.0f))
+;                                   b(last(lines(links(arms(m)[1])))) => exp(path0)
+;                                   b(last(lines(links(arms(m)[2])))) => exp(path1) ]
+;                                for arm in arms(m) seq-cat :
+;                                  for line in lines(links(arm)) seq: len(line) => Const(desired-len),
+;                                ],
+;            to-tuple $ cat(vars(path0), vars(path1)))
+
+
+defn PolyLinePath2 (name:Symbol) -> Vertex :
+  Vertex(name, true, SymVar(`x, 0.0f) SymVar(`y, 0.0f) SymVar(`z, 0.0f))
+
+defn TimePoly2DancerBody (name:Symbol, num-arms:Int, num-links:Int, desired-len:Float) -> BindBody :
+  val path0 = PolyLinePath2(`path0)
+  BindBody(`tdb,
+           DancerBody(`tab, num-arms, num-links),
+           fn (m) : for arm in arms(m) seq-cat : for line in lines(links(arm)) seq: len(line) => Const(desired-len),
+           []
+           )
+
+defn run-module (m:Module, time:SymVar) :
+  val rt = jit-runtime-new()
+  *active-tiling* = false ; TODO -- INIT STATE -- CAN JUST DO RELOAD
+  ensure-gui-init()
+  gui-window-hint(GUI-SAMPLES, 64)
+  gui-window-hint(GUI-ALPHA-BITS, 8)
+  gui-window-hint(GUI-DOUBLE-BUFFER, GL-TRUE)
+  srand(current-time-ms())
+  parse-args(screen-props, command-line-arguments())
+  val win =
+    if is-fullscreen :
+      val mon  = gui-get-primary-monitor()
+      val mode = gui-get-video-mode(mon)
+      gui-create-window(width(mode), height(mode), "Constraints", mon)
+    else :
+      gui-create-window(win-width, win-height, "Constraints")
+  println("BUILDING BODY...")
+  val c = Body(m)
+  println("START COMPILING...")
+  compile(c, rt)
+  println("DONE COMPILING...")
+  val v = ConstraintsViz(win, c, symvars(c), time)
+  set-throttling?(v, false)
+  init(v)
+  parse-args(props(v), command-line-arguments())
+  ;; if input-filename != "" :
+  ;;   val a = leds(v)
+  ;;   set-leds(v, Constraints(num-iters(a)))
+  run(v)
+
+defn lookup-polyhedron (name:String, len:Float) -> Polyhedron :
+  val poly = switch(name) :
+    "tet" : tet-mesh
+    "cube" : cube-mesh
+    "rhombic" : fab-rhombic-dodecahedron()
+    "dodecahedron" : fab-dodecahedron()
+  val e0 = edges(poly)[0]
+  val now-len = distance(vertices(poly)[e0[0]], vertices(poly)[e0[1]])
+  mag(len / now-len, poly)
+
+defn radar-demo (n0:Int n1:Int, x0:Float) : 
+  val time = SymVar(`time, 0.0f, false, false)
+  val m = RadarArmBodies(`main, n0, n1, x0, time)
+  run-module(m, time)
+      
+val robot-arm-spec =
+  KinematicsSpec([LinkSpec(`lower, 10.0f), LinkSpec(`upper, 10.0f)],
+                 [JointSpec(`elbow, HingeJoint, `lower, `upper)])
+
+val robot-leg-spec =
+  KinematicsSpec([LinkSpec(`ankle, 5.0f), LinkSpec(`calf, 10.0f), LinkSpec(`thigh, 10.0f)],
+                 [JointSpec(`ankle, RotaryJoint, `ankle, `calf), JointSpec(`knee, HingeJoint, `calf, `thigh)])
+
+val robot-arm-spec0 =
+  KinematicsSpec([LinkSpec(`lower, 10.0f)], [])
+
+val robot-arm-exp-spec =
+  KinematicsExpSpec(
+    `shoulder,
+    [LinkExpSpec(`fore-arm, `hand, `elbow, 10.0f),
+     JointExpSpec(`elbow, 2, default-limits, `fore-arm, `upper-arm),
+     LinkExpSpec(`upper-arm, `elbow, `shoulder, 10.0f)])
+
+val robot-arm-exp-spec2 =
+  KinematicsExpSpec(
+    `torso,
+    [LinkExpSpec(`fore-arm, `elbow,     `hand, 10.0f),
+     JointExpSpec(`elbow, 2, default-limits, `upper-arm, `fore-arm),
+     LinkExpSpec(`upper-arm, `shoulder, `elbow, 10.0f)
+     JointExpSpec(`origin, 2, default-limits, `base, `upper-arm),
+     LinkExpSpec(`base,      `torso,    `shoulder, 0.0f)
+     ])
+
+val robot-arm-exp-spec3 =
+  KinematicsExpSpec(
+    `origin,
+    [LinkExpSpec(`fore-arm, `elbow,     `hand, 10.0f),
+     JointExpSpec(`elbow, 2, default-limits, `upper-arm, `fore-arm),
+     LinkExpSpec(`upper-arm, `shoulder, `elbow, 10.0f)
+     JointExpSpec(`origin, 2, default-limits, `pivot, `upper-arm),
+     LinkExpSpec(`pivot, `torso, `shoulder, 1.0f)
+     JointExpSpec(`torso, 1, default-limits, `base, `pivot),
+     LinkExpSpec(`base,      `origin,    `torso, 0.0f)
+     ])
+
+val robot-leg-arm-exp-spec =
+  KinematicsExpSpec(
+    `foot,
+    [LinkExpSpec(`ankle, `foot, `knee, 10.0f)
+     JointExpSpec(`knee, 2, default-limits, `ankle, `thigh)
+     LinkExpSpec(`thigh, `knee, `torso, 10.0f),
+     JointExpSpec(`torso, 2, default-limits, `thigh, `upper-arm),
+     LinkExpSpec(`upper-arm, `torso, `elbow, 10.0f),
+     JointExpSpec(`elbow, 2, default-limits, `upper-arm, `fore-arm)
+     LinkExpSpec(`fore-arm, `elbow, `hand, 10.0f)])
+
+defn robot-arm (side:Symbol) -> Seqable<LinkExpSpec|JointExpSpec> :
+  defn nameit (base:Symbol) : symbol-join $ [side "-" base]
+  [ LinkExpSpec(nameit(`upper-arm), `torso, nameit(`elbow), 10.0f),
+    JointExpSpec(nameit(`elbow), 2, default-limits, nameit(`upper-arm), nameit(`fore-arm))
+    LinkExpSpec(nameit(`fore-arm), nameit(`elbow), nameit(`hand), 10.0f) ]
+
+defn robot-leg () -> Seqable<LinkExpSpec|JointExpSpec> :
+  [ LinkExpSpec(`ankle, `foot, `knee, 10.0f),
+    JointExpSpec(`knee, 2, default-limits, `ankle, `thigh)
+    LinkExpSpec(`thigh, `knee, `torso, 10.0f) ]
+
+val robot-simple-body-exp-spec =
+  KinematicsExpSpec(`foot,
+    cat-all $ [
+      robot-arm(`left)
+      robot-arm(`right)
+      robot-leg()
+      [ JointExpSpec(`left-hip, 2,  Box1f(-0.25f * PI-F, -0.25f * PI-F), `thigh, `left-upper-arm)
+        JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `thigh, `right-upper-arm) ]
+      ] )
+
+; val robot-body-exp-spec =
+;   KinematicsExpSpec(
+;     `foot,
+;     [LinkExpSpec(`ankle, `foot, `knee, 10.0f), LinkExpSpec(`thigh, `knee, `dick, 10.0f),
+;      LinkExpSpec(`center-torso, `dick, `torso, 5.0f),
+;      LinkExpSpec(`left-torso, `torso, `left-shoulder, 5.0f),
+;      LinkExpSpec(`right-torso, `torso, `right-shoulder, 5.0f)
+; 
+;      LinkExpSpec(`left-upper-arm, `left-shoulder, `left-elbow, 10.0f), LinkExpSpec(`left-fore-arm, `left-elbow, `left-hand, 10.0f), ,
+;      LinkExpSpec(`right-upper-arm, `right-shoulder, `right-elbow, 10.0f), LinkExpSpec(`right-fore-arm, `right-elbow, `right-hand, 10.0f),
+;
+;     [JointExpSpec(`left-elbow, 2, false, `left-upper-arm, `left-fore-arm)
+;      JointExpSpec(`right-elbow, 2, false, `right-upper-arm, `right-fore-arm)
+;      JointExpSpec(`knee, 2, false, `ankle, `thigh)
+;      ])
+
+defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
+  val time = SymVar(`time, 0.0f, false, false)
+  val m =
+    switch(top-name) :
+      "robot-arm0" : KinematicsBody(`main, robot-arm-spec0)
+      "robot-arm" : KinematicsBody(`main, robot-arm-spec)
+      "robot-arm-exp" : KinematicsExpBody(`main, robot-arm-exp-spec)
+      "robot-arm-exp2" : KinematicsExpBody(`main, robot-arm-exp-spec2)
+      "robot-arm-exp3" : KinematicsExpBody(`main, robot-arm-exp-spec3)
+      "simple-robot-exp" : KinematicsExpBody(`main, robot-simple-body-exp-spec)
+      "robot-leg-arm" : KinematicsExpBody(`main, robot-leg-arm-exp-spec)
+      "robot-leg" : KinematicsBody(`main, robot-leg-spec)
+      "kinematics" : KinematicsExpBody2(`main)
+      "same-vertices" : SameVerticesBody(`main)
+      "reflection" : ReflectionBody(`main)
+      "line" : LineBody(`main, 7.0f)
+      "max" : MaxBody(`main)
+      "min" : MinBody(`main)
+      "min-lines" : MinLinesBody(`main)
+      "point-line" : PointLineBody(`main)
+      "on-plane" : PointsOnPlaneBody(`main, n-0)
+      "on-line" : OnLineBody(`main)
+      ; "same-side" : SameSideBody(`main)
+      "mid-point-line" : MidPointLineBody(`main, 10.0f)
+      "vertical-line" : VerticalLineBody(`main)
+      "horizontal-line" : HorizontalLineBody(`main)
+      ; "two-lines" : MultiLineBody(`main, 2)
+      "parallel-lines" : ParallelLinesBody(`main)
+      "right-angle" : RightAngleBody(`main)
+      "triangle" : TriangleBody(`main)
+      "reference-triangle" : ReferenceTriangleBody(`main)
+      "equalateral" : EqualateralTriangleBody(`main)
+      "two-equalaterals" : TwoEqualateralTrianglesBody(`main)
+      "tetrahedron" : TetrahedronBody(`main)
+      "rectangle" : RectangleBody(`main, V2f(10.0f, 10.0f), true)
+      "optional-rectangle" : OptionalRectangleBody(`main, V2f(10.0f, 10.0f), true, key-1)
+      "time-parallelogram" : TimeParallelogram(`main, time)
+      "edge-plane-rectangle" : EdgePlaneRectangleBody(`main)
+      "spokes" : SpokesBody(`main, n-0)
+      "polyhedron" : PolyhedronBody(`main, lookup-polyhedron(top-kind-0, x-0), x-0)
+      "square" : SquareBody(`main, 7.0f, false)
+      "two-squares" : TwoSquaresBody(`main)
+      "translate-square" : TranslateSquareBody(`main)
+      "square-in-triangle" : SquareInTriangleBody(`main)
+      "pentagon" : PentagonBody(`main, 7.0f)
+      "py-hat" : PyHatBody(`main)
+      "truss" : TrussBody(`main, n-0)
+      "truss3" : Truss3Body(`main, n-0)
+      "scissors" : ScissorsBody(`main, 10.0f, PI-F / 4.0f, false)
+      "two-scissors" : TwoScissorsBody(`main, 10.0f, PI-F / 4.0f, true)
+      "multi-scissors" : MultiScissorsBody(`main, n-0, 10.0f, PI-F / 4.0f, true)
+      "bind-square" : BindSquareBody(`main, 7.0f)
+      "time-square" : TimeSquareBody(`main, 7.0f, time)
+      "time-translate-square" : TimeTranslateSquareBody(`main, 7.0f, time)
+      "time-scissors" : TimeScissorsBody(`main, 10.0f, time)
+      "time-two-scissors" : TimeTwoScissorsBody(`main, 10.0f, time)
+      "time-multi-scissors" : TimeMultiScissorsBody(`main, n-0, 10.0f, time)
+      "arm" : ArmBody(`main, n-0, x-0)
+      "time-arm" : TimeArmBody(`main, n-0, time)
+      "radar-arm" : RadarArmBody(`main, n-0, time)
+      "arms" : ArmBodies(`main, n-0, n-1)
+      "radar-arms" : RadarArmBodies(`main, n-0, n-1, x-0, time)
+      "dancer" : GroundedDancerBody(`main, n-0, n-1, x-0)
+      "time-kinematics" : TimeKinematics(`main, x-0, time)
+      "time-exp-kinematics" : TimeExpKinematics(`main, x-0, time)
+      "time-leg" : TimeLeg(`main, x-0, time)
+      "time-dancer-cube" : TimeDancerBody1a(`main, n-0, n-1, x-0, x-1, time)
+      "time-dancer-uing" : TimeDancerBody1b(`main, n-0, n-1, x-0, x-1, time)
+      "time-dancer-uing-wrist" : TimeDancerBody1c(`main, n-0, n-1, x-0, x-1, time)
+      "time-dancer-cube-uing-wrist" : TimeDancerBody2(`main, n-0, n-1, x-0, x-1, time)
+      "time-dancer-cube-uing-wrist-hulu" : TimeDancerBody3(`main, n-0, n-1, x-0, x-1, time)
+      ; "time-poly-dancer" : TimePolyDancerBody(`main, n-0, n-1, x-0, x-1, time)
+      "time-dancers" : TimeDancerBodies(`main, n-0, n-1, n-2, x-0, x-1, time)
+      else : LineBody(`line, 7.0f)
+
+  ; println("RUNNING MODULE...")
+
+  run-module(m, time)  
+
+defn demo (top-name:String) :
+  demo(top-name, top-n-0, top-n-1, top-n-2, top-x-0, top-x-1)
+
+defn main () :
+  parse-args(screen-props, command-line-arguments())
+  RANDOM = Random(current-time-us() when (top-seed < 0) else to-long(top-seed))
+  demo(top-name)  
+
+; main()
