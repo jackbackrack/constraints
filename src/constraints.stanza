@@ -58,7 +58,6 @@ public defstruct ExpVar <: AnyVar :
   id : Symbol with: (as-method => true, updater => sub-id)
   e : Exp
   x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
-  ; x-off : Int with: (setter => set-x-off, init => -1)
 with:
   printer => true
   constructor => #ExpVar
@@ -89,8 +88,6 @@ public defstruct SymVar <: AnyVar :
   next : (SymVar, Int, Float) -> False with: (default => fn (a, b, c) : false) ; used for setting inputs
   dx : Float with: (as-method => true, setter => set-dx, init => 0.0f)      ; value increment
   e : Exp with: (setter => set-e, init => Const(0.0f))   ; expression for computing dx
-  ; x-off : Int with: (setter => set-x-off, init => -1)
-  ; dx-off : Int with: (setter => set-dx-off, init => -1)
 with:
   printer => true
   constructor => #SymVar
@@ -605,6 +602,7 @@ public defn vertices (m:Module) -> Seqable<Vertex> :
   filter-by<Vertex>(entities(m))
 
 public defstruct Cost :
+  name : Symbol
   value : Exp
   gain : Float with : ( setter => set-gain, default => 1.0f )
   cost-off : Int with: ( setter => set-cost-off, init => -1 )
@@ -673,7 +671,8 @@ public defn Body (top:Module) -> Body :
   val expvars = to-tuple $ filter-by<ExpVar>(vars)
   val symtab = to-hashtable<Symbol,SymVar> $ for v in symvars seq : id(v) => v
   Body(symtab, symvars, expvars, entities, vertices, ; edges, circles, planes, angles,
-       to-tuple $ cat([ Cost(total-cost(top)) ], seq(Cost, seq(value, all-mix-costs(top)))))
+       to-tuple $ cat([ Cost(add-suffix(name(top), `base), total-cost(top)) ],
+                        for mc in all-mix-costs(top) seq : Cost(name(mc), value(mc))))
 
 defmethod print (o:OutputStream, tab:HashTable<?,?>) :
   print(o, to-tuple $ tab)
@@ -721,12 +720,13 @@ public defn apply (v:SymVar, vs:HashTable<Symbol,SymVar>) -> Float :
   ; println("UPDATE %_ -> %_: %_" % [id(v), x, e(v)])
 
 public defn apply (b:Body) :
+  for v in symvars(b) do :
+    set-dx(v, 0.0f)
   for c in costs(b) do :
     val machine = machine(c)
     val dat = data(machine)
     for v in symvars(b) do :
       dat[x-off(c, v)] = x(v)
-      set-dx(v, 0.0f)
       ; println("%_ X[%_] %_" % [id(v), x-off(c, v), dat[x-off(c, v)]])
     run(machine)
     ; println("COST %_ ? %_" % [eval(cost(b), vars(b), 0), dat[cost-off(c)]])
@@ -1543,9 +1543,8 @@ public defn compile (b:Body, rt:JitRuntime) :
     val sexp0 = value(c)
     val sexp = collect-vars(sexp0)
     ; println(sexp0)
-    println("COLLECTED VARS")
     val deduper = Deduper()
-    println("COMPILING COST")
+    println("COMPILING COST %_" % [name(c)])
     val compiler-timer = MillisecondTimer("COMPILING")
     start(compiler-timer)
     val cost-var = compile(deduper,sexp)
@@ -1967,19 +1966,19 @@ public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
          SymVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1) + off-y)),
          SymVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
 
-public defn BindBody<?T> (name:Symbol, mod:?T&Module, constraints:Seqable<Exp>, new-vars:Tuple<AnyVar>, etc-entities:Seqable<Entity>) :
+public defn BindBody<?T> (name:Symbol, mod:?T&Module, constraints:Seqable<MixCost>, new-vars:Tuple<AnyVar>, etc-entities:Seqable<Entity>) :
   BindBody(name,
     new-vars,
     mod,
     to-tuple $ cat-all $ [new-vars, [ mod ], etc-entities],
     Const(0.0f),
-    to-tuple $ seq(MixCost, constraints))
+    to-tuple $ constraints)
 
 public defn BindBody<?T> (name:Symbol, mod:?T&Module,
-                          constraints:T -> Seqable<Exp>, 
+                          constraints:T -> Seqable<MixCost>, 
                           bindings:T -> Seqable< KeyValue<AnyVar|Vertex, Exp|Vec3Exp> >, new-vars:Tuple<AnyVar>) :
   val binding-constraints = for b in bindings(mod) seq-cat :
-    for (v in vars(key(b)), e in exps(value(b))) seq : SameConstraint(exp(v), e)
+    for (v in vars(key(b)), e in exps(value(b))) seq : MixCost(SameConstraint(exp(v), e))
   BindBody(name, mod, cat(constraints(mod), binding-constraints), new-vars, [])
 
 public defn BindBody<?T> (name:Symbol, mod:?T&Module,
