@@ -58,7 +58,7 @@ public defstruct ExpVar <: AnyVar :
   id : Symbol with: (as-method => true, updater => sub-id)
   e : Exp
   x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
-  x-off : Int with: (setter => set-x-off, init => -1)
+  ; x-off : Int with: (setter => set-x-off, init => -1)
 with:
   printer => true
   constructor => #ExpVar
@@ -89,8 +89,8 @@ public defstruct SymVar <: AnyVar :
   next : (SymVar, Int, Float) -> False with: (default => fn (a, b, c) : false) ; used for setting inputs
   dx : Float with: (as-method => true, setter => set-dx, init => 0.0f)      ; value increment
   e : Exp with: (setter => set-e, init => Const(0.0f))   ; expression for computing dx
-  x-off : Int with: (setter => set-x-off, init => -1)
-  dx-off : Int with: (setter => set-dx-off, init => -1)
+  ; x-off : Int with: (setter => set-x-off, init => -1)
+  ; dx-off : Int with: (setter => set-dx-off, init => -1)
 with:
   printer => true
   constructor => #SymVar
@@ -579,11 +579,21 @@ public defn ConnectedAngle (id:Symbol, e0:Edge, e1:Edge, measure?:True|False) ->
 public defn Angle (id:Symbol, e0:Edge, e1:Edge, measure?:True|False) -> Angle :
   Angle(id, v0(e0), v1(e0), v0(e1), v1(e1), measure?)
 
+public defstruct MixCost :
+  name  : Symbol
+  gain  : Exp
+  value : Exp
+
+public defn MixCost (value:Exp) -> MixCost : MixCost(`dummy, Const(1.0f), value)
+
 public deftype Module <: Entity
 public defmulti entities (m:Module) -> Tuple<Entity>
 public defmulti sub-entities (m:Module, es:Tuple<Entity>)
 public defmulti cost (m:Module) -> Exp
 public defmulti sub-cost (m:Module, c:Exp)
+public defmulti mix-costs (m:Module) -> Tuple<MixCost>
+
+defmethod mix-costs (m:Module) : []
 
 defmethod copy (m:Module, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> Module :
   println("Copy unimplemented for module")
@@ -598,7 +608,21 @@ public defstruct Cost :
   value : Exp
   gain : Float with : ( setter => set-gain, default => 1.0f )
   cost-off : Int with: ( setter => set-cost-off, init => -1 )
+  x-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
+  dx-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
   machine : Machine with: ( setter => set-machine, init => Machine(FloatArray(0), [], false) )
+
+defn x-off (c:Cost, v:AnyVar) -> Int :
+  x-offs(c)[id(v)]
+
+defn dx-off (c:Cost, v:SymVar) -> Int :
+  dx-offs(c)[id(v)]
+
+defn set-x-off (c:Cost, v:AnyVar, off:Int) :
+  x-offs(c)[id(v)] = off
+
+defn set-dx-off (c:Cost, v:SymVar, off:Int) :
+  dx-offs(c)[id(v)] = off
 
 public defstruct Body :
   symtab : HashTable<Symbol,SymVar>
@@ -630,6 +654,9 @@ public defn all-vertices (m:Module) -> Seqable<Vertex> :
 public defn total-cost (m:Module) -> Exp :
   reduce(plus, cost(m), seq(total-cost, filter-by<Module>(entities(m))))
 
+public defn all-mix-costs (m:Module) -> Seqable<MixCost> :
+  cat(mix-costs(m), seq-cat(all-mix-costs, filter-by<Module>(entities(m))))
+
 public defn Body (top:Module) -> Body :
   val entities = to-tuple $ all-entities(top)
 
@@ -646,7 +673,7 @@ public defn Body (top:Module) -> Body :
   val expvars = to-tuple $ filter-by<ExpVar>(vars)
   val symtab = to-hashtable<Symbol,SymVar> $ for v in symvars seq : id(v) => v
   Body(symtab, symvars, expvars, entities, vertices, ; edges, circles, planes, angles,
-       [ Cost(total-cost(top)) ])
+       to-tuple $ cat([ Cost(total-cost(top)) ], seq(Cost, seq(value, all-mix-costs(top)))))
 
 defmethod print (o:OutputStream, tab:HashTable<?,?>) :
   print(o, to-tuple $ tab)
@@ -698,22 +725,22 @@ public defn apply (b:Body) :
     val machine = machine(c)
     val dat = data(machine)
     for v in symvars(b) do :
-      dat[x-off(v)] = x(v)
+      dat[x-off(c, v)] = x(v)
       set-dx(v, 0.0f)
-      ; println("%_ X[%_] %_" % [id(v), x-off(v), dat[x-off(v)]])
+      ; println("%_ X[%_] %_" % [id(v), x-off(c, v), dat[x-off(c, v)]])
     run(machine)
-    ; println("COST %_ ? %_" % [eval(cost(b), vars(b), 0), dat[cost-off(b)]])
-    ; println("COST %_" % [dat[cost-off(b)]])
+    ; println("COST %_ ? %_" % [eval(cost(b), vars(b), 0), dat[cost-off(c)]])
+    ; println("COST %_" % [dat[cost-off(c)]])
     for v in symvars(b) do :
       ; val dx = apply(v, vars(b))
-      ; if dat[dx-off(v)] != 0.0f :
-      ;   println("%_ X[%_] %_ DX[%_] %_" % [id(v), x-off(v), dat[x-off(v)], dx-off(v), dat[dx-off(v)]])
-      set-dx(v, dx(v) - dat[dx-off(v)])
+      ; if dat[dx-off(c, v)] != 0.0f :
+      ;   println("%_ X[%_] %_ DX[%_] %_" % [id(v), x-off(c, v), dat[x-off(c, v)], dx-off(c, v), dat[dx-off(c, v)]])
+      set-dx(v, dx(v) - dat[dx-off(c, v)])
     ; TODO: run these in special machine
     for v in expvars(b) do :
-      val x = dat[x-off(v)]
+      val x = dat[x-off(c, v)]
       set-x(v, x)
-      ; println("%_[%_] = %_" % [v, x-off(v), x])
+      ; println("%_[%_] = %_" % [v, x-off(c, v), x])
 
 public defn clear (v:SymVar) :
   set-dx(v, 0.0f)
@@ -794,28 +821,28 @@ defn tmp-offset (name:Symbol) :
 defn tmp? (name:Symbol) -> True|False :
   prefix?(to-string(name), "tmp-")
 
-defn offset (e:Exp, sym-table:HashTable<Symbol,SymVar>) :
+defn offset (c:Cost, e:Exp, sym-table:HashTable<Symbol,SymVar>) :
   val v = e as Variable
   if tmp?(name(v)) :
     tmp-offset(name(v))
   else :
-    x-off(sym-table[name(v)])
+    x-off(c, sym-table[name(v)])
 
-defn translate (e:Exp, sym-table:HashTable<Symbol,SymVar>, pc:Int) -> Inst :
+defn translate (c:Cost, e:Exp, sym-table:HashTable<Symbol,SymVar>, pc:Int) -> Inst :
   match(e) :
     (e:Const) : LoadOp(pc, value(e))
-    (e:Define) : MoveOp(pc, offset(a(e), sym-table))
-    (e:Log) : LogOp(pc, offset(a(e), sym-table))
-    (e:Acos) : AcosOp(pc, offset(a(e), sym-table))
-    (e:Sin) : SinOp(pc, offset(a(e), sym-table))
-    (e:Cos) : CosOp(pc, offset(a(e), sym-table))
-    (e:Atan2) : Atan2Op(pc, offset(a(e), sym-table), offset(b(e), sym-table))
-    (e:Add) : AddOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
-    (e:Subtract) : SubtractOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
-    (e:Multiply) : MultiplyOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
-    (e:Divide) : DivideOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
-    (e:Power) : PowerOp(pc, offset(a(e), sym-table), offset(b(e), sym-table))
-    (e:Print) : PrintOp(pc, id(e), offset(a(e), sym-table))
+    (e:Define) : MoveOp(pc, offset(c, a(e), sym-table))
+    (e:Log) : LogOp(pc, offset(c, a(e), sym-table))
+    (e:Acos) : AcosOp(pc, offset(c, a(e), sym-table))
+    (e:Sin) : SinOp(pc, offset(c, a(e), sym-table))
+    (e:Cos) : CosOp(pc, offset(c, a(e), sym-table))
+    (e:Atan2) : Atan2Op(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
+    (e:Add) : AddOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
+    (e:Subtract) : SubtractOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
+    (e:Multiply) : MultiplyOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
+    (e:Divide) : DivideOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
+    (e:Power) : PowerOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
+    (e:Print) : PrintOp(pc, id(e), offset(c, a(e), sym-table))
 
 defmethod print (o:OutputStream, i:Inst) :
   match(i) :
@@ -846,9 +873,9 @@ public var show-code-size?:True|False = true
 
 public defn compile (exps:Vector<Exp>, b:Body, c:Cost, rt:JitRuntime) -> Machine :
   val insts = to-tuple $ for (e in exps, pc in 0 to false) seq :
-    translate(e, symtab(b), pc)
+    translate(c, e, symtab(b), pc)
   val jitter = jit ; jit-old when OLD? 
-  val save-offs = to-intset $ cat(seq(dx-off, symvars(b)), seq(x-off, expvars(b)))
+  val save-offs = to-intset $ cat(seq(dx-off{c, _}, symvars(b)), seq(x-off{c, _}, expvars(b)))
   add(save-offs, cost-off(c))
   Machine(FloatArray(length(insts) + length(symtab(b)), 0.0f), insts,
           jitter(insts, save-offs, rt, disassemble?, STANDARD-OUTPUT-STREAM as FileOutputStream) when jit?)
@@ -1523,12 +1550,12 @@ public defn compile (b:Body, rt:JitRuntime) :
     start(compiler-timer)
     val cost-var = compile(deduper,sexp)
     for (sym in symvars(b), off in 1 to false) do :
-      set-x-off(sym, (- off))
+      set-x-off(c, sym, (- off))
       ; println("INIT X-OFF %_ = %_" % [id(sym), (- off)])
     val symvar-patches = IntTable<Int>()
     ; println("COST LEN %_" % [length(instructions(deduper))])
     ; println(simplify(sexp, 0))
-    set-cost-off(c, offset(cost-var, symtab(b)))
+    set-cost-off(c, offset(c, cost-var, symtab(b)))
     stop(compiler-timer)
     println(compiler-timer)
     ; for (e in ddsexps, i in 0 to false) do :
@@ -1550,21 +1577,21 @@ public defn compile (b:Body, rt:JitRuntime) :
         stop(dedup-timer)
         ; println("DE %_ VAR %_ EXP %_" % [id(v), name(de-var), e(v)])
         ; println("DE %_ VAR %_" % [id(v), name(de-var)])
-        set-dx-off(v, offset(de-var, symtab(b)))
+        set-dx-off(c, v, offset(c, de-var, symtab(b)))
         ; println("V %_ VAR %_ LEN %_ OFF %_" % [id(v), de-var, length(instructions(deduper)), dx-off(v)])
         ; println(simplify(e(v), 0))
         ; val de = dedup(e(v))
         ; for (e in de, i in 0 to false) do :
         ;   println("%_: %_" % [i, e])
         ; println("V %_ E = %_" % [id(v), e(v)])
-        dx-off(v)
+        dx-off(c, v)
       else :
         0
     for v in expvars(b) do :
       val e-var = compile(deduper, e(v))
-      val off = offset(e-var, symtab(b))
+      val off = offset(c, e-var, symtab(b))
       ; println("DE %_ VAR %_ EXP %_ OFF %_" % [id(v), name(e-var), e(v), off])
-      set-x-off(v, off)
+      set-x-off(c, v, off)
     stop(derivative-timer)
     println(derivative-timer)
     println(differentiate-timer)
@@ -1577,18 +1604,18 @@ public defn compile (b:Body, rt:JitRuntime) :
     ; for (off in de-offs, i in 0 to false) do :
     ;   println("DE-OFF-%_ %_" % [i, off])
     for (sym in symvars(b), off in length(exps) to false) do :
-      symvar-patches[x-off(sym)] = off
-      set-x-off(sym, off)
+      symvar-patches[x-off(c, sym)] = off
+      set-x-off(c, sym, off)
     for v in expvars(b) do :
-      if x-off(v) < 0 :
-        set-x-off(v, symvar-patches[x-off(v)])
+      if x-off(c, v) < 0 :
+        set-x-off(c, v, symvar-patches[x-off(c, v)])
     ; patch dx-offs 
     ; println("BASE %_" % [length(exps)])
     for sym in symvars(b) do :
-      val prev-dx-off = dx-off(sym)
-      if dx-off(sym) < 0 :
-        set-dx-off(sym, length(exps) - (dx-off(sym) + 1))
-        ; println("DX-OFF %_ (WAS %_) = %_" % [id(sym), prev-dx-off, dx-off(sym)])
+      val prev-dx-off = dx-off(c, sym)
+      if dx-off(c, sym) < 0 :
+        set-dx-off(c, sym, length(exps) - (dx-off(c, sym) + 1))
+        ; println("DX-OFF %_ (WAS %_) = %_" % [id(sym), prev-dx-off, dx-off(c, sym)])
     ; println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(symtab(b))])
     if length(symtab(b)) != length(symvars(b)) :
       println("LEN VARS %_ LEN TAB %_" % [length(symvars(b)), length(symtab(b))])
@@ -1819,6 +1846,7 @@ public defstruct BindBody <: Module :
   mod : Module
   entities : Tuple<Entity> with: (as-method => true)
   cost : Exp with: (as-method => true)
+  mix-costs : Tuple<MixCost> with: (as-method => true)
 
 public defn pulse (x:Exp, s:Exp, e:Exp) -> Exp :
   threshold(x, s) * (Const(1.0f) - threshold(x, e))
@@ -1944,7 +1972,8 @@ public defn BindBody<?T> (name:Symbol, mod:?T&Module, constraints:Seqable<Exp>, 
     new-vars,
     mod,
     to-tuple $ cat-all $ [new-vars, [ mod ], etc-entities],
-    sum $ constraints)
+    Const(0.0f),
+    to-tuple $ seq(MixCost, constraints))
 
 public defn BindBody<?T> (name:Symbol, mod:?T&Module,
                           constraints:T -> Seqable<Exp>, 
