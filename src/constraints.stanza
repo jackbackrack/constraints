@@ -58,6 +58,7 @@ public defstruct ExpVar <: AnyVar :
   id : Symbol with: (as-method => true, updater => sub-id)
   e : Exp
   x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
+  nx : Float with: (setter => set-nx, init => 0.0f)                         ; next value
 with:
   printer => true
   constructor => #ExpVar
@@ -81,7 +82,7 @@ defmethod copy (v:ExpVar, name:Symbol) -> ExpVar :
 
 public defstruct SymVar <: AnyVar :
   id : Symbol with: (as-method => true, updater => sub-id)
-  x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
+  x : Float with: (as-method => true, setter => set-x, default => 0.0f)  ; current value
   limits : False|Box1f with: (default => false)
   dx-update? : True|False with: (default => false)           ; is this constant?
   const? : True|False with: (default => false)
@@ -603,15 +604,22 @@ public defn vertices (m:Module) -> Seqable<Vertex> :
 
 public defstruct Cost :
   name : Symbol
+  gain : Exp 
   value : Exp
-  gain : Float with : ( setter => set-gain, default => 1.0f )
+  gain-off : Int with: ( setter => set-gain-off, init => -1 )
   cost-off : Int with: ( setter => set-cost-off, init => -1 )
   x-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
+  nx-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
   dx-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
+  used-symvars : Tuple<SymVar> with: (setter => set-used-symvars, init => [])
+  used-expvars : Tuple<ExpVar> with: (setter => set-used-expvars, init => [])
   machine : Machine with: ( setter => set-machine, init => Machine(FloatArray(0), [], false) )
 
 defn x-off (c:Cost, v:AnyVar) -> Int :
   x-offs(c)[id(v)]
+
+defn nx-off (c:Cost, v:ExpVar) -> Int :
+  nx-offs(c)[id(v)]
 
 defn dx-off (c:Cost, v:SymVar) -> Int :
   dx-offs(c)[id(v)]
@@ -619,11 +627,15 @@ defn dx-off (c:Cost, v:SymVar) -> Int :
 defn set-x-off (c:Cost, v:AnyVar, off:Int) :
   x-offs(c)[id(v)] = off
 
+defn set-nx-off (c:Cost, v:ExpVar, off:Int) :
+  nx-offs(c)[id(v)] = off
+
 defn set-dx-off (c:Cost, v:SymVar, off:Int) :
   dx-offs(c)[id(v)] = off
 
 public defstruct Body :
-  symtab : HashTable<Symbol,SymVar>
+  vartab : HashTable<Symbol,AnyVar>
+  vars : Tuple<AnyVar>
   symvars : Tuple<SymVar>
   expvars : Tuple<ExpVar>
   entities : Tuple<Entity>
@@ -669,10 +681,10 @@ public defn Body (top:Module) -> Body :
   val vars = to-tuple $ unique $ seq-cat(vars, entities)
   val symvars = to-tuple $ filter-by<SymVar>(vars)
   val expvars = to-tuple $ filter-by<ExpVar>(vars)
-  val symtab = to-hashtable<Symbol,SymVar> $ for v in symvars seq : id(v) => v
-  Body(symtab, symvars, expvars, entities, vertices, ; edges, circles, planes, angles,
-       to-tuple $ cat([ Cost(add-suffix(name(top), `base), total-cost(top)) ],
-                        for mc in all-mix-costs(top) seq : Cost(name(mc), value(mc))))
+  val vartab = to-hashtable<Symbol,AnyVar> $ for v in vars seq : id(v) => v
+  Body(vartab, vars, symvars, expvars, entities, vertices, ; edges, circles, planes, angles,
+       to-tuple $ cat([ Cost(add-suffix(name(top), `base), Const(1.0f), total-cost(top)) ],
+                        for mc in all-mix-costs(top) seq : Cost(name(mc), gain(mc), value(mc))))
 
 defmethod print (o:OutputStream, tab:HashTable<?,?>) :
   print(o, to-tuple $ tab)
@@ -722,25 +734,33 @@ public defn apply (v:SymVar, vs:HashTable<Symbol,SymVar>) -> Float :
 public defn apply (b:Body) :
   for v in symvars(b) do :
     set-dx(v, 0.0f)
+  for v in expvars(b) do :
+    set-nx(v, x(v))
   for c in costs(b) do :
+    ; println("COST %_" % [name(c)])
     val machine = machine(c)
     val dat = data(machine)
-    for v in symvars(b) do :
+    for v in used-symvars(c) do :
       dat[x-off(c, v)] = x(v)
-      ; println("%_ X[%_] %_" % [id(v), x-off(c, v), dat[x-off(c, v)]])
+    for v in used-expvars(c) do :
+      dat[x-off(c, v)] = x(v)
     run(machine)
     ; println("COST %_ ? %_" % [eval(cost(b), vars(b), 0), dat[cost-off(c)]])
     ; println("COST %_" % [dat[cost-off(c)]])
-    for v in symvars(b) do :
+    for v in used-symvars(c) do :
       ; val dx = apply(v, vars(b))
-      ; if dat[dx-off(c, v)] != 0.0f :
-      ;   println("%_ X[%_] %_ DX[%_] %_" % [id(v), x-off(c, v), dat[x-off(c, v)], dx-off(c, v), dat[dx-off(c, v)]])
-      set-dx(v, dx(v) - dat[dx-off(c, v)])
+      if dx-update?(v) :
+        if dat[dx-off(c, v)] != 0.0f :
+          ; println("%_ X[%_] %_ DX[%_] %_" % [id(v), x-off(c, v), dat[x-off(c, v)], dx-off(c, v), dat[dx-off(c, v)]])
+          ; println("  %_ DX[%_] %_" % [id(v), dx-off(c, v), dat[dx-off(c, v)]])
+          set-dx(v, dx(v) - dat[gain-off(c)] * dat[dx-off(c, v)])
     ; TODO: run these in special machine
-    for v in expvars(b) do :
-      val x = dat[x-off(c, v)]
-      set-x(v, x)
+    for v in used-expvars(c) do :
+      val x = dat[nx-off(c, v)]
+      set-nx(v, x)
       ; println("%_[%_] = %_" % [v, x-off(c, v), x])
+  for v in expvars(b) do :
+    set-x(v, nx(v))
 
 public defn clear (v:SymVar) :
   set-dx(v, 0.0f)
@@ -787,14 +807,14 @@ public defstruct Atan2Op <: Inst : (d:Int, a:Int, b:Int)
 public defstruct PrintOp <: Inst : (d:Int, id:Int, a:Int)
 
 public deftype Deduper
-public defmulti compile (d:Deduper, e:Exp) -> Variable
+public defmulti dedup (d:Deduper, e:Exp) -> Variable
 public defmulti instructions (d:Deduper) -> Vector<Exp>
 
 public defn Deduper () :
   val tab = HashTable<Exp,Symbol>()
   val exps = Vector<Exp>()
   new Deduper :
-    defmethod compile (this, e:Exp) -> Variable :
+    defmethod dedup (this, e:Exp) -> Variable :
       let loop (e:Exp = e) :
         defn define-tmp (name:Symbol, c:Exp) :
           tab[c] = name
@@ -821,28 +841,28 @@ defn tmp-offset (name:Symbol) :
 defn tmp? (name:Symbol) -> True|False :
   prefix?(to-string(name), "tmp-")
 
-defn offset (c:Cost, e:Exp, sym-table:HashTable<Symbol,SymVar>) :
+defn offset (c:Cost, e:Exp, var-table:HashTable<Symbol,AnyVar>) :
   val v = e as Variable
   if tmp?(name(v)) :
     tmp-offset(name(v))
   else :
-    x-off(c, sym-table[name(v)])
+    x-off(c, var-table[name(v)])
 
-defn translate (c:Cost, e:Exp, sym-table:HashTable<Symbol,SymVar>, pc:Int) -> Inst :
+defn translate (c:Cost, e:Exp, var-table:HashTable<Symbol,AnyVar>, pc:Int) -> Inst :
   match(e) :
     (e:Const) : LoadOp(pc, value(e))
-    (e:Define) : MoveOp(pc, offset(c, a(e), sym-table))
-    (e:Log) : LogOp(pc, offset(c, a(e), sym-table))
-    (e:Acos) : AcosOp(pc, offset(c, a(e), sym-table))
-    (e:Sin) : SinOp(pc, offset(c, a(e), sym-table))
-    (e:Cos) : CosOp(pc, offset(c, a(e), sym-table))
-    (e:Atan2) : Atan2Op(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
-    (e:Add) : AddOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
-    (e:Subtract) : SubtractOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
-    (e:Multiply) : MultiplyOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
-    (e:Divide) : DivideOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
-    (e:Power) : PowerOp(pc, offset(c, a(e), sym-table), offset(c, b(e), sym-table))
-    (e:Print) : PrintOp(pc, id(e), offset(c, a(e), sym-table))
+    (e:Define) : MoveOp(pc, offset(c, a(e), var-table))
+    (e:Log) : LogOp(pc, offset(c, a(e), var-table))
+    (e:Acos) : AcosOp(pc, offset(c, a(e), var-table))
+    (e:Sin) : SinOp(pc, offset(c, a(e), var-table))
+    (e:Cos) : CosOp(pc, offset(c, a(e), var-table))
+    (e:Atan2) : Atan2Op(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
+    (e:Add) : AddOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
+    (e:Subtract) : SubtractOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
+    (e:Multiply) : MultiplyOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
+    (e:Divide) : DivideOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
+    (e:Power) : PowerOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
+    (e:Print) : PrintOp(pc, id(e), offset(c, a(e), var-table))
 
 defmethod print (o:OutputStream, i:Inst) :
   match(i) :
@@ -873,11 +893,12 @@ public var show-code-size?:True|False = true
 
 public defn compile (exps:Vector<Exp>, b:Body, c:Cost, rt:JitRuntime) -> Machine :
   val insts = to-tuple $ for (e in exps, pc in 0 to false) seq :
-    translate(c, e, symtab(b), pc)
+    translate(c, e, vartab(b), pc)
   val jitter = jit ; jit-old when OLD? 
-  val save-offs = to-intset $ cat(seq(dx-off{c, _}, symvars(b)), seq(x-off{c, _}, expvars(b)))
+  val save-offs = to-intset $ cat-all $ [seq(dx-off{c, _}, symvars(b)), seq(x-off{c, _}, expvars(b)), seq(nx-off{c, _}, expvars(b))]
   add(save-offs, cost-off(c))
-  Machine(FloatArray(length(insts) + length(symtab(b)), 0.0f), insts,
+  add(save-offs, gain-off(c))
+  Machine(FloatArray(length(insts) + length(vartab(b)), 0.0f), insts,
           jitter(insts, save-offs, rt, disassemble?, STANDARD-OUTPUT-STREAM as FileOutputStream) when jit?)
 
 val all-saved-registers = [rbx, rcx, rsi, rdi rdx, r8, r9, r10, r11]
@@ -1539,22 +1560,37 @@ public defn run (m:Machine) -> FloatArray :
 
 public defn compile (b:Body, rt:JitRuntime) :
   ; println(b)
-  for c in costs(b) do :
+  println("LEN VARS %_" % [length(vars(b))])
+  println("LEN SYM VARS %_" % [length(symvars(b))])
+  println("LEN EXP VARS %_" % [length(expvars(b))])
+  for (c in costs(b), idx in 0 to false) do :
     val sexp0 = value(c)
-    val sexp = collect-vars(sexp0)
+    val cost-sexp = collect-vars(sexp0)
     ; println(sexp0)
     val deduper = Deduper()
-    println("COMPILING COST %_" % [name(c)])
+    println("--- COMPILING COST %_" % [name(c)])
+    ; println(value(c))
     val compiler-timer = MillisecondTimer("COMPILING")
     start(compiler-timer)
-    val cost-var = compile(deduper,sexp)
-    for (sym in symvars(b), off in 1 to false) do :
-      set-x-off(c, sym, (- off))
+    val gain-sexp = collect-vars(gain(c))
+    val gain-var = dedup(deduper, gain-sexp)
+    val cost-var = dedup(deduper, cost-sexp)
+    val used-names = to-hashset<Symbol> $ cat(vars(gain-sexp), vars(cost-sexp))
+    val lim-symvars = to-tuple $ for v in symvars(b) filter : used-names[id(v)]
+    val lim-symvars-set = to-hashset<Symbol> $ seq(id, lim-symvars)
+    println("  SYMVARS %_" % [to-tuple $ seq(id, lim-symvars)])
+    set-used-symvars(c, to-tuple $ for v in symvars(b) filter : idx == 0 or used-names[id(v)])
+    set-used-expvars(c, to-tuple $ for v in expvars(b) filter : idx == 0 or used-names[id(v)])
+    ; set-used-symvars(c, symvars(b))
+    ; set-used-expvars(c, expvars(b))
+    for (v in cat(used-symvars(c), used-expvars(c)), off in 1 to false) do :
+      set-x-off(c, v, (- off))
       ; println("INIT X-OFF %_ = %_" % [id(sym), (- off)])
-    val symvar-patches = IntTable<Int>()
+    val var-patches = IntTable<Int>()
     ; println("COST LEN %_" % [length(instructions(deduper))])
     ; println(simplify(sexp, 0))
-    set-cost-off(c, offset(c, cost-var, symtab(b)))
+    set-cost-off(c, offset(c, cost-var, vartab(b)))
+    set-gain-off(c, offset(c, gain-var, vartab(b)))
     stop(compiler-timer)
     println(compiler-timer)
     ; for (e in ddsexps, i in 0 to false) do :
@@ -1565,32 +1601,34 @@ public defn compile (b:Body, rt:JitRuntime) :
     val pre-num-equals = num-equals
     val pre-num-hashes = num-hashes
     start(derivative-timer)
-    val de-offs = to-tuple $ for v in symvars(b) seq :
+    for v in used-symvars(c) do :
       if dx-update?(v) :
         start(differentiate-timer)
-        val de = differentiate(sexp, id(v))
+        val de = differentiate(cost-sexp, id(v))
         stop(differentiate-timer)
+        ; val dx = match(de:Const) : de
+        ; println("DERIVATIVE %_ %_ -> %_" % [id(v), lim-symvars-set[id(v)], dx])
         set-e(v, de)
         start(dedup-timer)
-        val de-var = compile(deduper, e(v))
+        val de-var = dedup(deduper, e(v))
         stop(dedup-timer)
         ; println("DE %_ VAR %_ EXP %_" % [id(v), name(de-var), e(v)])
         ; println("DE %_ VAR %_" % [id(v), name(de-var)])
-        set-dx-off(c, v, offset(c, de-var, symtab(b)))
+        set-dx-off(c, v, offset(c, de-var, vartab(b)))
         ; println("V %_ VAR %_ LEN %_ OFF %_" % [id(v), de-var, length(instructions(deduper)), dx-off(v)])
         ; println(simplify(e(v), 0))
         ; val de = dedup(e(v))
         ; for (e in de, i in 0 to false) do :
         ;   println("%_: %_" % [i, e])
         ; println("V %_ E = %_" % [id(v), e(v)])
-        dx-off(c, v)
-      else :
-        0
-    for v in expvars(b) do :
-      val e-var = compile(deduper, e(v))
-      val off = offset(c, e-var, symtab(b))
-      ; println("DE %_ VAR %_ EXP %_ OFF %_" % [id(v), name(e-var), e(v), off])
-      set-x-off(c, v, off)
+        ; dx-off(c, v)
+      ; else :
+      ;   0
+    for v in used-expvars(c) do :
+      val e-var = dedup(deduper, e(v))
+      val off = offset(c, e-var, vartab(b))
+      ; println("EV %_ VAR %_ EXP %_ OFF %_" % [id(v), name(e-var), e(v), off])
+      set-nx-off(c, v, off)
     stop(derivative-timer)
     println(derivative-timer)
     println(differentiate-timer)
@@ -1602,31 +1640,35 @@ public defn compile (b:Body, rt:JitRuntime) :
     ; println("COST-OFF %_" % [cost-off(b)])
     ; for (off in de-offs, i in 0 to false) do :
     ;   println("DE-OFF-%_ %_" % [i, off])
-    for (sym in symvars(b), off in length(exps) to false) do :
-      symvar-patches[x-off(c, sym)] = off
-      set-x-off(c, sym, off)
-    for v in expvars(b) do :
-      if x-off(c, v) < 0 :
-        set-x-off(c, v, symvar-patches[x-off(c, v)])
+    for (sv in used-symvars(c), off in length(exps) to false) do :
+      var-patches[x-off(c, sv)] = off
+      set-x-off(c, sv, off)
+    for (ev in used-expvars(c), off in (length(exps) + length(used-symvars(c))) to false) do :
+      var-patches[x-off(c, ev)] = off
+      set-x-off(c, ev, off)
+    for v in used-expvars(c) do :
+      if nx-off(c, v) < 0 :
+        set-nx-off(c, v, var-patches[nx-off(c, v)])
+        ; println("EV %_ OFF %_" % [id(v), nx-off(c, v)])
     ; patch dx-offs 
     ; println("BASE %_" % [length(exps)])
-    for sym in symvars(b) do :
+    for sym in used-symvars(c) do :
       val prev-dx-off = dx-off(c, sym)
       if dx-off(c, sym) < 0 :
         set-dx-off(c, sym, length(exps) - (dx-off(c, sym) + 1))
         ; println("DX-OFF %_ (WAS %_) = %_" % [id(sym), prev-dx-off, dx-off(c, sym)])
-    ; println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(symtab(b))])
-    if length(symtab(b)) != length(symvars(b)) :
-      println("LEN VARS %_ LEN TAB %_" % [length(symvars(b)), length(symtab(b))])
-      for v in symvars(b) do :
+    ; println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(vartab(b))])
+    if length(vartab(b)) != length(vars(b)) :
+      println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(vartab(b))])
+      for v in vars(b) do :
         println(id(v))
-      val tab = HashTable<Symbol,SymVar>()
-      for v in symvars(b) do :
+      val tab = HashTable<Symbol,AnyVar>()
+      for v in vars(b) do :
         if key?(tab, id(v)) :
           println("Already have a %_" % [id(v)])
         else :
           tab[id(v)] = v
-    ; println("SYMTAB %_" % [to-tuple $ symtab(b)])
+    ; println("VARTAB %_" % [to-tuple $ vartab(b)])
     val machine = compile(exps, b, c, rt)
     ; for inst in insts(machine) do :
     ;   println(inst)

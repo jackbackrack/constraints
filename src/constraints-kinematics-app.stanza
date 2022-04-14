@@ -311,13 +311,29 @@ defn MixCost (id:Symbol, n:Symbol, g:Exp, e:Exp) -> MixCost :
   MixCost(add-suffix(full-name(id), n), g, e)
 
 defn MixCost (id:Symbol, n:Symbol, e:Exp) -> MixCost :
-  MixCost(id, n, Const(0.0f), e)
+  MixCost(id, n, Const(1.0f), e)
 
 defn centering (m:KinematicsExpBody, center:(Tuple<Vec3Exp>, Vec3Exp) -> Exp) -> Exp :
   center(to-tuple $ seq(exp, values(vertex-table(m))), Const(V3f(0.0f, 0.0f, 0.0f)))
 
 defn centering (m:KinematicsExpBody) -> Exp :
   centering(m, CenterXZConstraint)
+
+defn curl-angle (a:Exp) -> Exp :
+  defn curl (a:Exp) : exp(Const(-1.0f) * a * a)
+  Const(100.0f) * curl(Const(1.5f / PI-F) * a)
+
+defn curl-angles (m:KinematicsExpBody) -> Exp :
+  ; sum $ seq(fn (l) : curl-angle(angle(l)), for l in values(link-table(m)) filter : axis(l) == 2)
+  sum $ seq(fn (l) : curl-angle(exp(angle(l))), values(link-table(m)))
+
+defn limit-angle (a:Exp) -> Exp :
+  defn limit (a:Exp) : exp(a * a)
+  limit(Const(3.0f / PI-F) * a)
+
+defn limit-angles (m:KinematicsExpBody) -> Exp :
+  ; sum $ seq(fn (l) : limit-angle(angle(l)), for l in values(link-table(m)) filter : axis(l) == 2)
+  sum $ seq(fn (l) : limit-angle(exp(angle(l))), values(link-table(m)))
 
 defn straighten (m:KinematicsExpBody) -> Exp :
   ; sum $ seq(fn (l) : exp(angle(l)) * exp(angle(l)), for l in values(link-table(m)) filter : axis(l) == 2)
@@ -338,7 +354,9 @@ defn TimeExpKinematicsPath (name:Symbol, radius:Float, time:SymVar, spec:Kinemat
     fn (m, verts) : [ MixCost(name, `centering, centering(m)), MixCost(name, `path, SameConstraint(exp(verts[tip]), exp(path))) ])
 
 defn TimeExpKinematicsPathCenter (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol) -> BindBody :
-  TimeExpKinematics(name, time, spec, [ path ], fn (m, verts) : [ MixCost(name, `centering, centering(m, CenterConstraint)),
+  TimeExpKinematics(name, time, spec, [ path ], fn (m, verts) : [
+    MixCost(name, `centering, centering(m, CenterConstraint)),
+    MixCost(name, `limit, limit-angles(m)),
     MixCost(name, `path, SameConstraint(exp(verts[tip]), exp(path))) ])
 
 defn TimeExpKinematicsPaths (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec,
@@ -348,6 +366,17 @@ defn TimeExpKinematicsPaths (name:Symbol, radius:Float, time:SymVar, spec:Kinema
       for ([s, e] in successive-pairs(cat([0.0f], cumsum(seq(key, paths)))), path in seq(value, paths), i in 0 to false) seq :
         println("S %_ E %_ V %_" % [s, e, id(path)])
         MixCost(name, symbol-join([`path, i]), pulse(exp(time), Const(s), Const(e)), SameConstraint(exp(verts[tip]), exp(path))) ])
+
+defn TimeExpKinematicsCurl (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ time ],
+    fn (m, verts) : to-tuple $ cat-all $ [ [
+      MixCost(name, `centering,  centering(m)),
+      MixCost(name, `limit,      limit-angles(m)) ]
+      for i in 0 to 4 seq-cat :
+        val o = to-float(i) * 20.0f
+        [ MixCost(name, symbol-join([`curl i]),       pulse(exp(time), Const(o +  0.0f), Const(o + 10.0f)), curl-angles(m)),
+          MixCost(name, symbol-join([`straighten i]), pulse(exp(time), Const(o + 10.0f), Const(o + 20.0f)), straighten(m)) ],
+      ])
 
 defn TimeExpKinematicsPathStraighten (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol) -> BindBody :
   TimeExpKinematics(name, time, spec, [ path ], fn (m, verts) : [
@@ -680,6 +709,8 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
       "time-dancer-rnd" :
         val path = Particle(`particle, x-0, x-1)
         TimeExpKinematicsPathCenter(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
+      "time-dancer-curl" :
+        TimeExpKinematicsCurl(`main, x-0, time, robot-simple-body-exp-spec5)
       "time-dancer-seq" :
         val path1 = PolyLinePath(`path1, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         val path2 = PolyLinePath(`path2, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 6.0f)

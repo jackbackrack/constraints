@@ -794,4 +794,4 @@ defn main () :
   RANDOM = Random(current-time-us() when (top-seed < 0) else to-long(top-seed))
   demo(top-name)  
 
-; main()
+main()
