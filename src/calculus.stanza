@@ -11,6 +11,7 @@ public deftype Exp <: Equalable & Hashable
 public defmulti vars (e:Exp) -> Tuple<Symbol>
 public defstruct Const <: Exp : (value:Float, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Variable <: Exp : (name:Symbol, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Temporary <: Exp : (namespace : Int, off : Int, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Define <: Exp : (name:Symbol, a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Add <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Subtract <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
@@ -31,6 +32,7 @@ defmethod equal? (e0:Exp, e1:Exp) -> True|False :
    match(e0, e1) :
       (e0:Const, e1:Const) : value(e0) == value(e1)
       (e0:Variable, e1:Variable) : name(e0) == name(e1)
+      (e0:Temporary, e1:Temporary) : namespace(e0) == namespace(e1) and off(e0) == off(e1)
       (e0:Define, e1:Define) : name(e0) == name(e1) and equal?(a(e0), a(e1))
       (e0:Add, e1:Add) : equal?(a(e0), a(e1)) and equal?(b(e0), b(e1))
       (e0:Subtract, e1:Subtract) : equal?(a(e0), a(e1)) and equal?(b(e0), b(e1))
@@ -52,6 +54,7 @@ defmethod hash (e:Exp) -> Int :
    match(e) :
       (e:Const) : 1 * hash(value(e))
       (e:Variable) : 3 * hash(name(e))
+      (e:Temporary) : 5 * (namespace(e) * 3 * off(e))
       (e:Define) : 7 * (hash(name(e)) * 3 * hash(a(e)))
       (e:Log) : 11 * hash(a(e))
       (e:Sin) : 49 * hash(a(e))
@@ -87,6 +90,7 @@ defmethod print (o:OutputStream, e:Exp) :
    match(e) :
       (e:Const) : print(o, value(e))
       (e:Variable) : print(o, name(e))
+      (e:Temporary) : print(o, "tmp(%_,%_)" % [namespace(e), off(e)])
       (e:Log) : print(o, "ln(%_)" % [a(e)])
       (e:Acos) : print(o, "acos(%_)" % [a(e)])
       (e:Sin) : print(o, "sin(%_)" % [a(e)])
@@ -124,22 +128,24 @@ public defn differentiate (e:Exp, x:Symbol) -> Exp :
 
     match(e) :
      (e:Const) :
-        Const(0.0f)
+       Const(0.0f)
      (e:Variable) :
-        if name(e) == x : Const(1.0f)
-        else : Const(0.0f)
+       if name(e) == x : Const(1.0f)
+       else : Const(0.0f)
+     (e:Temporary) :
+       Const(0.0f)
      (e:Define) :
-        ddx(a(e))
+       ddx(a(e))
      (e:Add) :
-        ddx(a(e)) + ddx(b(e))
+       ddx(a(e)) + ddx(b(e))
      (e:Subtract) :
-        ddx(a(e)) - ddx(b(e))
+       ddx(a(e)) - ddx(b(e))
      (e:Multiply) :
-        a(e) * ddx(b(e)) + b(e) * ddx(a(e))
+       a(e) * ddx(b(e)) + b(e) * ddx(a(e))
      (e:Divide) :
-        val num = b(e) * ddx(a(e)) - a(e) * ddx(b(e))
-        val den = b(e) ^ Const(2.0f)
-        num / den
+       val num = b(e) * ddx(a(e)) - a(e) * ddx(b(e))
+       val den = b(e) ^ Const(2.0f)
+       num / den
      (e:Power) :
        match(b(e)) :
          (b:Const) : b * pow(a(e), b - Const(1.0f)) * ddx(a(e))
@@ -149,13 +155,13 @@ public defn differentiate (e:Exp, x:Symbol) -> Exp :
            else :
              e * (b * ddx(a(e)) / a(e) + ln(a(e)) * ddx(b))
      (e:Log) :
-        ddx(a(e)) / a(e)
+       ddx(a(e)) / a(e)
      (e:Acos) :
-        (Const(-1.0f) / pow(Const(1.0f) - pow(a(e), Const(2.0f)), Const(-2.0f))) * ddx(a(e))
+       (Const(-1.0f) / pow(Const(1.0f) - pow(a(e), Const(2.0f)), Const(-2.0f))) * ddx(a(e))
      (e:Sin) :
-        Cos(a(e)) * ddx(a(e))
+       Cos(a(e)) * ddx(a(e))
      (e:Cos) :
-        Const(-1.0f) * sin(a(e)) * ddx(a(e))
+       Const(-1.0f) * sin(a(e)) * ddx(a(e))
      (e:Atan2) :
         ; defn d-atan (x:Exp) :
         ;   (Const(1.0f) / (Const(1.0f) + pow(x, Const(2.0f)))) * ddx(x)
@@ -164,9 +170,9 @@ public defn differentiate (e:Exp, x:Symbol) -> Exp :
         val div = pow(a(e), Const(2.0f)) + pow(b(e), Const(2.0f))
         ( (b(e) * ddx(a(e))) - (a(e) * ddx(b(e))) ) / div
      (e:Print) :
-        ddx(a(e))
+       ddx(a(e))
   else :
-     Const(0.0f)
+    Const(0.0f)
         
 
 defn merge (a:Tuple<Symbol>, b:Tuple<Symbol>) -> Tuple<Symbol> :
@@ -217,6 +223,7 @@ public defn collect-vars (e:Exp) -> Exp :
       (e:Cos) : (val na = f(a(e)), Cos(na, vars(na)))
       (e:Print) : (val na = f(a(e)), Print(id(e), na, vars(na)))
       (e:Variable) : Variable(name(e), [name(e)])
+      (e:Temporary) : e
       (e:Define) : (val na = f(a(e)), Define(name(e), na, merge(vars(na), [name(e)])))
       (e:Const) : e
 
@@ -348,3 +355,9 @@ public defn simplify (e:Exp, d:Int) :
    ; for i in 0 to d do : print(" ")
    ; println("<%_ %_" % [d, res])
    res
+
+public defn logistic (k:Float, x:Exp) -> Exp :
+  Const(1.0f) / (Const(1.0f) + exp(Const(-1.0f * k) * x))
+
+public defn logistic (x:Exp) -> Exp :
+  logistic(1.0f, x)
