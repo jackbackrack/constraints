@@ -54,6 +54,9 @@ public defmulti exp (v:AnyVar) -> Exp
 public defmulti update (v:AnyVar) -> False
 public defmulti copy (v:AnyVar, name:Symbol) -> AnyVar
   
+defmethod dx (v:AnyVar) -> Float : 0.0f
+defmethod set-dx (v:AnyVar, d:Float) -> False : false
+
 public defstruct ExpVar <: AnyVar :
   id : Symbol with: (as-method => true, updater => sub-id)
   e : Exp
@@ -62,9 +65,6 @@ public defstruct ExpVar <: AnyVar :
 with:
   printer => true
   constructor => #ExpVar
-
-defmethod dx (v:ExpVar) -> Float : 0.0f
-defmethod set-dx (v:ExpVar, d:Float) -> False : false
 
 defmethod exp (v:ExpVar) -> Exp :
   e(v)
@@ -80,13 +80,37 @@ defmethod update (v:ExpVar) : false
 defmethod copy (v:ExpVar, name:Symbol) -> ExpVar :
   #ExpVar(name, e(v))
 
+public defstruct FunVar <: AnyVar :
+  id : Symbol with: (as-method => true, updater => sub-id)
+  x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
+  next : (FunVar, Int, Float) -> False with: (default => fn (a, b, c) : false) ; used for setting inputs
+with:
+  printer => true
+  constructor => #FunVar
+
+public defn FunVar (id:Symbol, x:Float, next:(FunVar, Int, Float) -> False) -> FunVar :
+  #FunVar(full-name(id), x, next)
+
+defmethod exp (v:FunVar) -> Exp :
+  Variable(id(v))
+
+defmethod vars (v:FunVar) -> Tuple<AnyVar> :
+  [ v ]
+
+public defn exps (v:FunVar) -> Tuple<Exp> :
+  [ exp(v) ]
+
+defmethod update (v:FunVar) : false
+
+defmethod copy (v:FunVar, name:Symbol) -> FunVar :
+  #FunVar(name, 0.0f, next(v))
+
 public defstruct SymVar <: AnyVar :
   id : Symbol with: (as-method => true, updater => sub-id)
   x : Float with: (as-method => true, setter => set-x, default => 0.0f)  ; current value
   limits : False|Box1f with: (default => false)
   dx-update? : True|False with: (default => false)           ; is this constant?
   const? : True|False with: (default => false)
-  next : (SymVar, Int, Float) -> False with: (default => fn (a, b, c) : false) ; used for setting inputs
   dx : Float with: (as-method => true, setter => set-dx, init => 0.0f)      ; value increment
   e : Exp with: (setter => set-e, init => Const(0.0f))   ; expression for computing dx
 with:
@@ -103,9 +127,6 @@ defmethod copy (s:SymVar, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -
 
 public defn full-name (id:Symbol) -> Symbol :
   symbol-join([PREFIX id])
-
-public defn SymVar (id:Symbol, x:Float, next:(SymVar, Int, Float) -> False) -> SymVar :
-  #SymVar(full-name(id), x, false, false, false, next)
 
 public defn SymVar (id:Symbol, x:Float, limits:Box1f) -> SymVar :
   #SymVar(id, x, limits, lo(limits) != hi(limits))
@@ -611,8 +632,10 @@ public defstruct Cost :
   x-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
   nx-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
   dx-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
+  used-funvars : Tuple<FunVar> with: (setter => set-used-funvars, init => [])
   used-symvars : Tuple<SymVar> with: (setter => set-used-symvars, init => [])
   used-expvars : Tuple<ExpVar> with: (setter => set-used-expvars, init => [])
+  used-allvars : Tuple<AnyVar> with: (setter => set-used-allvars, init => [])
   machine : Machine with: ( setter => set-machine, init => Machine(FloatArray(0), [], false) )
 
 defn x-off (c:Cost, v:AnyVar) -> Int :
@@ -636,6 +659,7 @@ defn set-dx-off (c:Cost, v:SymVar, off:Int) :
 public defstruct Body :
   vartab : HashTable<Symbol,AnyVar>
   vars : Tuple<AnyVar>
+  funvars : Tuple<FunVar>
   symvars : Tuple<SymVar>
   expvars : Tuple<ExpVar>
   entities : Tuple<Entity>
@@ -679,10 +703,11 @@ public defn Body (top:Module) -> Body :
   ; val vars = to-tuple $ cat-all $ [etc-vars, seq-cat(vars, vertices), seq-cat(vars, circles), seq-cat(vars, planes)],
 
   val vars = to-tuple $ unique $ seq-cat(vars, entities)
+  val funvars = to-tuple $ filter-by<FunVar>(vars)
   val symvars = to-tuple $ filter-by<SymVar>(vars)
   val expvars = to-tuple $ filter-by<ExpVar>(vars)
   val vartab = to-hashtable<Symbol,AnyVar> $ for v in vars seq : id(v) => v
-  Body(vartab, vars, symvars, expvars, entities, vertices, ; edges, circles, planes, angles,
+  Body(vartab, vars, funvars, symvars, expvars, entities, vertices, ; edges, circles, planes, angles,
        to-tuple $ cat([ Cost(add-suffix(name(top), `base), Const(1.0f), total-cost(top)) ],
                         for mc in all-mix-costs(top) seq : Cost(name(mc), gain(mc), value(mc))))
 
@@ -740,9 +765,7 @@ public defn apply (b:Body) :
     ; println("COST %_" % [name(c)])
     val machine = machine(c)
     val dat = data(machine)
-    for v in used-symvars(c) do :
-      dat[x-off(c, v)] = x(v)
-    for v in used-expvars(c) do :
+    for v in used-allvars(c) do :
       dat[x-off(c, v)] = x(v)
     run(machine)
     ; println("COST %_ ? %_" % [eval(cost(b), vars(b), 0), dat[cost-off(c)]])
@@ -784,8 +807,9 @@ public defn update (b:Body) :
     update(v)
 
 public defn next (b:Body, tick:Int, time:Float) :
-  for v in symvars(b) do :
-    next(v)(v, tick, time) ; if next?(v) : 
+  for v in funvars(b) do :
+    next(v)(v, tick, time)
+    ; println("next %_ -> %_" % [id(v), x(v)])
 
 public defn clear (b:Body) :
   for v in symvars(b) do :
@@ -1561,6 +1585,7 @@ public defn run (m:Machine) -> FloatArray :
 public defn compile (b:Body, rt:JitRuntime) :
   ; println(b)
   println("LEN VARS %_" % [length(vars(b))])
+  println("LEN FUN VARS %_" % [length(funvars(b))])
   println("LEN SYM VARS %_" % [length(symvars(b))])
   println("LEN EXP VARS %_" % [length(expvars(b))])
   for (c in costs(b), idx in 0 to false) do :
@@ -1576,14 +1601,12 @@ public defn compile (b:Body, rt:JitRuntime) :
     val gain-var = dedup(deduper, gain-sexp)
     val cost-var = dedup(deduper, cost-sexp)
     val used-names = to-hashset<Symbol> $ cat(vars(gain-sexp), vars(cost-sexp))
-    val lim-symvars = to-tuple $ for v in symvars(b) filter : used-names[id(v)]
-    val lim-symvars-set = to-hashset<Symbol> $ seq(id, lim-symvars)
-    println("  SYMVARS %_" % [to-tuple $ seq(id, lim-symvars)])
+    set-used-funvars(c, to-tuple $ for v in funvars(b) filter : idx == 0 or used-names[id(v)])
     set-used-symvars(c, to-tuple $ for v in symvars(b) filter : idx == 0 or used-names[id(v)])
     set-used-expvars(c, to-tuple $ for v in expvars(b) filter : idx == 0 or used-names[id(v)])
-    ; set-used-symvars(c, symvars(b))
-    ; set-used-expvars(c, expvars(b))
-    for (v in cat(used-symvars(c), used-expvars(c)), off in 1 to false) do :
+    set-used-allvars(c, to-tuple $ cat-all $ [used-funvars(c), used-symvars(c), used-expvars(c)])
+    println("USED-FUNVARS %_" % [used-funvars(c)])
+    for (v in used-allvars(c), off in 1 to false) do :
       set-x-off(c, v, (- off))
       ; println("INIT X-OFF %_ = %_" % [id(sym), (- off)])
     val var-patches = IntTable<Int>()
@@ -1606,8 +1629,6 @@ public defn compile (b:Body, rt:JitRuntime) :
         start(differentiate-timer)
         val de = differentiate(cost-sexp, id(v))
         stop(differentiate-timer)
-        ; val dx = match(de:Const) : de
-        ; println("DERIVATIVE %_ %_ -> %_" % [id(v), lim-symvars-set[id(v)], dx])
         set-e(v, de)
         start(dedup-timer)
         val de-var = dedup(deduper, e(v))
@@ -1640,12 +1661,10 @@ public defn compile (b:Body, rt:JitRuntime) :
     ; println("COST-OFF %_" % [cost-off(b)])
     ; for (off in de-offs, i in 0 to false) do :
     ;   println("DE-OFF-%_ %_" % [i, off])
-    for (sv in used-symvars(c), off in length(exps) to false) do :
-      var-patches[x-off(c, sv)] = off
-      set-x-off(c, sv, off)
-    for (ev in used-expvars(c), off in (length(exps) + length(used-symvars(c))) to false) do :
-      var-patches[x-off(c, ev)] = off
-      set-x-off(c, ev, off)
+    var off:Int = length(exps)
+    for (av in used-allvars(c), off in length(exps) to false) do :
+      var-patches[x-off(c, av)] = off
+      set-x-off(c, av, off)
     for v in used-expvars(c) do :
       if nx-off(c, v) < 0 :
         set-nx-off(c, v, var-patches[nx-off(c, v)])
@@ -1966,9 +1985,9 @@ public defn PolyLinePath (name:Symbol, poly:PolyLine3f, speed:Float) -> Vertex :
   defn elt (tick:Int, t:Float, dim:Int) : pt-of(tick, t)[dim]
   defn nm (i:Symbol) : add-suffix(name, i)
   Vertex(name, true,
-         SymVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
-         SymVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1))),
-         SymVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
+         FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
+         FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1))),
+         FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
 
 public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
   defn rnd-vec (a:Float) : rnd(dims-to-box $ xyz(a))
@@ -2004,9 +2023,9 @@ public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
   defn elt (tick:Int, t:Float, dim:Int) : pt-of(tick, t)[dim]
   defn nm (i:Symbol) : add-suffix(name, i)
   Vertex(name, true,
-         SymVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
-         SymVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1) + off-y)),
-         SymVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
+         FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
+         FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1) + off-y)),
+         FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
 
 public defn BindBody<?T> (name:Symbol, mod:?T&Module, constraints:Seqable<MixCost>, new-vars:Tuple<AnyVar>, etc-entities:Seqable<Entity>) :
   BindBody(name,
