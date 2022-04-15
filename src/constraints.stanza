@@ -862,7 +862,8 @@ public defn Deduper (id:Int) :
   new Deduper :
     defmethod id (this) : id
     defmethod lookup (this, e:Exp) -> Temporary|Variable|False :
-      get?(tab, e)
+      match(e:Variable|Temporary) : e
+      else: get?(tab, e)
     defmethod dedup (this, e:Exp) -> Temporary|Variable :
       let loop (e:Exp = e) :
         val c = map(loop, e)
@@ -881,6 +882,9 @@ public defn Deduper (id:Int) :
               tmp
     defmethod instructions (this) -> Vector<Exp> :
       exps
+
+defn lookup! (d:Deduper, e:Exp) -> Temporary|Variable :
+  lookup(d, e) as Temporary|Variable
 
 defn offset (c:Cost, e:Exp, var-table:HashTable<Symbol,AnyVar>) :
   match(e) :
@@ -1621,14 +1625,8 @@ public defn compile (b:Body, rt:JitRuntime) :
     set-used-expvars(c, to-tuple $ for v in expvars(b) filter : idx == 0 or used-names[id(v)])
     set-used-allvars(c, to-tuple $ cat-all $ [used-funvars(c), used-symvars(c), used-expvars(c)])
     println("USED-FUNVARS %_" % [used-funvars(c)])
-    for (v in used-allvars(c), off in 1 to false) do :
-      set-x-off(c, v, (- off))
-      ; println("INIT X-OFF %_ = %_" % [id(sym), (- off)])
-    val var-patches = IntTable<Int>()
     ; println("COST LEN %_" % [length(instructions(deduper))])
     ; println(simplify(sexp, 0))
-    set-cost-off(c, offset(c, cost-var, vartab(b)))
-    set-gain-off(c, offset(c, gain-var, vartab(b)))
     stop(compiler-timer)
     println(compiler-timer)
     ; for (e in ddsexps, i in 0 to false) do :
@@ -1639,58 +1637,53 @@ public defn compile (b:Body, rt:JitRuntime) :
     val pre-num-equals = num-equals
     val pre-num-hashes = num-hashes
     start(derivative-timer)
-    for v in used-symvars(c) do :
-      if dx-update?(v) :
-        start(differentiate-timer)
-        val de = differentiate(cost-sexp, id(v))
-        stop(differentiate-timer)
-        set-e(v, de)
-        start(dedup-timer)
-        val de-var = dedup(deduper, e(v))
-        stop(dedup-timer)
-        ; println("DE %_ VAR %_ EXP %_" % [id(v), name(de-var), e(v)])
-        ; println("DE %_ VAR %_" % [id(v), name(de-var)])
-        set-dx-off(c, v, offset(c, de-var, vartab(b)))
-        ; println("V %_ VAR %_ LEN %_ OFF %_" % [id(v), de-var, length(instructions(deduper)), dx-off(v)])
-        ; println(simplify(e(v), 0))
-        ; val de = dedup(e(v))
-        ; for (e in de, i in 0 to false) do :
-        ;   println("%_: %_" % [i, e])
-        ; println("V %_ E = %_" % [id(v), e(v)])
-        ; dx-off(c, v)
-      ; else :
-      ;   0
-    for v in used-expvars(c) do :
-      val e-var = dedup(deduper, e(v))
-      val off = offset(c, e-var, vartab(b))
-      ; println("EV %_ VAR %_ EXP %_ OFF %_" % [id(v), name(e-var), e(v), off])
-      set-nx-off(c, v, off)
+    val de-tmps = to-tuple $ for v in filter(dx-update?, used-symvars(c)) seq :
+      start(differentiate-timer)
+      val de = differentiate(cost-sexp, id(v))
+      stop(differentiate-timer)
+      set-e(v, de)
+      start(dedup-timer)
+      val tmp = dedup(deduper, e(v))
+      stop(dedup-timer)
+      tmp
+      ; println("DE %_ VAR %_ EXP %_" % [id(v), name(de-var), e(v)])
+      ; println("DE %_ VAR %_" % [id(v), name(de-var)])
+      ; println("V %_ VAR %_ LEN %_ OFF %_" % [id(v), de-var, length(instructions(deduper)), dx-off(v)])
+      ; println(simplify(e(v), 0))
+      ; val de = dedup(e(v))
+      ; for (e in de, i in 0 to false) do :
+      ;   println("%_: %_" % [i, e])
+      ; println("V %_ E = %_" % [id(v), e(v)])
+      ; dx-off(c, v)
+
+    val exp-tmps = to-tuple $ for v in used-expvars(c) seq :
+      dedup(deduper, e(v))
+
     stop(derivative-timer)
     println(derivative-timer)
     println(differentiate-timer)
     println(dedup-timer)
     println("NUM-HASHES %_ NUM-EQUALS %_" % [num-hashes - pre-num-hashes, num-equals - pre-num-equals])
+
+    ; assign offsets
+
     val exps = instructions(deduper)
-    ; for (e in exps, i in 0 to false) do :
-    ;   println("%_: %_" % [i, e])
-    ; println("COST-OFF %_" % [cost-off(b)])
-    ; for (off in de-offs, i in 0 to false) do :
-    ;   println("DE-OFF-%_ %_" % [i, off])
-    var off:Int = length(exps)
+
     for (av in used-allvars(c), off in length(exps) to false) do :
-      var-patches[x-off(c, av)] = off
       set-x-off(c, av, off)
-    for v in used-expvars(c) do :
-      if nx-off(c, v) < 0 :
-        set-nx-off(c, v, var-patches[nx-off(c, v)])
-        ; println("EV %_ OFF %_" % [id(v), nx-off(c, v)])
-    ; patch dx-offs 
-    ; println("BASE %_" % [length(exps)])
-    for sym in used-symvars(c) do :
-      val prev-dx-off = dx-off(c, sym)
-      if dx-off(c, sym) < 0 :
-        set-dx-off(c, sym, length(exps) - (dx-off(c, sym) + 1))
-        ; println("DX-OFF %_ (WAS %_) = %_" % [id(sym), prev-dx-off, dx-off(c, sym)])
+
+    for (v in filter(dx-update?, used-symvars(c)), tmp in de-tmps) do :
+      ; lookup!(deduper, e(v))
+      set-dx-off(c, v, offset(c, tmp, vartab(b)))
+
+    for (v in used-expvars(c), tmp in exp-tmps) do :
+      ; println("EV %_ VAR %_ EXP %_ OFF %_" % [id(v), name(e-var), e(v), off])
+      ; lookup!(deduper, e(v))
+      set-nx-off(c, v, offset(c, tmp, vartab(b)))
+
+    set-cost-off(c, offset(c, cost-var, vartab(b)))
+    set-gain-off(c, offset(c, gain-var, vartab(b)))
+
     ; println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(vartab(b))])
     if length(vartab(b)) != length(vars(b)) :
       println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(vartab(b))])

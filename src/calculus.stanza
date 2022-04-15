@@ -68,6 +68,24 @@ defmethod hash (e:Exp) -> Int :
       (e:Power) : 103 * (hash(a(e)) + 37 * hash(b(e)))
       (e:Print) : 117 * (hash(id(e)) + 41 * hash(a(e)))
 
+public defn kind (e:Exp) -> ? :
+  match(e) :
+    (e:Const) : e
+    (e:Variable) : e
+    (e:Temporary) : e
+    (e:Define) : e
+    (e:Log) : "Log"
+    (e:Sin) : "Sin"
+    (e:Cos) : "Cos"
+    (e:Acos) : "Acos"
+    (e:Atan2) : "Atan2"
+    (e:Add) : "Add"
+    (e:Subtract) : "Subtract"
+    (e:Multiply) : "Multiply"
+    (e:Divide) : "Divide"
+    (e:Power) : "Power"
+    (e:Print) : "Print"
+
 ;Precedences
 defn precedence (e:Exp) :
    match(e) :
