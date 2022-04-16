@@ -103,7 +103,7 @@ public defn falling? (name:Symbol, e:Exp) -> [Exp, ExpVar] :
 public defstruct FunVar <: AnyVar :
   id : Symbol with: (as-method => true, updater => sub-id)
   x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
-  next : (FunVar, Int, Float) -> False with: (default => fn (a, b, c) : false) ; used for setting inputs
+  next : (FunVar, Int, Float) -> False with: (default => fn (a, b, c) : false, setter => set-next) ; used for setting inputs
 with:
   printer => true
   constructor => #FunVar
@@ -424,6 +424,13 @@ public defstruct Vertex <: Entity :
 with:
   printer => true
 
+public defn set-next (v:Vertex, pt-of:(Int, Float) -> V3f) :
+  defn set-funvar-next (fv:AnyVar, idx:Int) :
+    match(fv:FunVar) : set-next(fv, fn (v, i, t) : set-x(v, pt-of(i, t)[idx]))
+  set-funvar-next(x(v), 0)
+  set-funvar-next(y(v), 1)
+  set-funvar-next(z(v), 2)
+
 public defn Vertex (id:Symbol, v:Vec3Exp) -> Vertex :
   val n = full-name(id)
   Vertex(n, false, #ExpVar(add-suffix(n, `x), x(v)), #ExpVar(add-suffix(n, `y), y(v)), #ExpVar(add-suffix(n, `z), z(v)))
@@ -676,7 +683,7 @@ defn set-nx-off (c:Cost, v:ExpVar, off:Int) :
 defn set-dx-off (c:Cost, v:SymVar, off:Int) :
   dx-offs(c)[id(v)] = off
 
-defstruct SchedulerState :
+public defstruct SchedulerState :
   t : Float with: ( setter => set-t, init => 0.0f )
   end-t : Float with: ( setter => set-end-t, init => 0.0f )
   tick : Int with: ( setter => set-tick, init => 0 )
@@ -684,7 +691,7 @@ defstruct SchedulerState :
 public deftype Scheduler
 public defmulti state (s:Scheduler) -> SchedulerState
 public defmulti body (s:Scheduler) -> Body
-public defmulti schedule (s:Scheduler) -> Float
+public defmulti schedule (s:Scheduler) -> Seq<Float>
 
 public defn t (s:Scheduler) -> Float : t(state(s))
 public defn end-t (s:Scheduler) -> Float : end-t(state(s))
@@ -696,7 +703,7 @@ public defn set-tick (s:Scheduler, t:Int) : set-tick(state(s), t)
 public defstruct SimpleScheduler <: Scheduler :
   state : SchedulerState with: (as-method => true, init => SchedulerState())
   body : Body with: (as-method => true)
-  schedule : Float with: (as-method => true, init => 1.0f)
+  schedule : Seq<Float> with: (as-method => true, init => repeatedly({ 1.0f }))
 
 public defstruct Body :
   vartab : HashTable<Symbol,AnyVar>
@@ -1985,7 +1992,7 @@ defn interval-bsearch (elts:Tuple<Float>, x:Float) -> Int :
 
 ; TODO: ONLY ONE STROKE FOR NOW
 ; TODO: REDO POLYLINE3f to have LineString3f as elements
-public defn PolyLinePath (name:Symbol, poly:PolyLine3f, speed:Float) -> Vertex :
+public defn PolyLinePathInterpolator (poly:PolyLine3f, speed:Float) -> (Int, Float) -> V3f :
   val stroke = strokes(poly)[0]
   val segs:Tuple<[V3f,V3f]> = to-tuple $ successive-pairs(stroke)
   val sums = to-tuple $ cat([0.0f], cumsum $ seq(fn (seg) : distance(seg[0], seg[1]), segs))
@@ -2010,14 +2017,17 @@ public defn PolyLinePath (name:Symbol, poly:PolyLine3f, speed:Float) -> Vertex :
       last-tick = tick
       last-pt   = pt
       pt
-  defn elt (tick:Int, t:Float, dim:Int) : pt-of(tick, t)[dim]
+  pt-of
+
+public defn PolyLinePath (name:Symbol, poly:PolyLine3f, speed:Float) -> Vertex :
+  val pt-of = PolyLinePathInterpolator(poly, speed)
   defn nm (i:Symbol) : add-suffix(name, i)
   Vertex(name, true,
-         FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
-         FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1))),
-         FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
+         FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t))))
+         FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)))),
+         FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t)))))
 
-public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
+public defn ParticleInterpolator (radius:Float) -> (Int, Float) -> V3f :
   defn rnd-vec (a:Float) : rnd(dims-to-box $ xyz(a))
   var acceleration:V3f = rnd-vec(1.0f)
   var axis:V3f = x3f(1.0f)
@@ -2048,12 +2058,15 @@ public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
       last-position = position
       ; acceleration = V3f(0.0f, 0.0f, 0.0f)
       position
-  defn elt (tick:Int, t:Float, dim:Int) : pt-of(tick, t)[dim]
+  pt-of
+
+public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
+  val pt-of = ParticleInterpolator(radius)
   defn nm (i:Symbol) : add-suffix(name, i)
   Vertex(name, true,
-         FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 0))),
-         FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 1) + off-y)),
-         FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, elt(i, t, 2))))
+         FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t)))),
+         FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t))) + off-y),
+         FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t)))))
 
 public defn BindBody<?T> (name:Symbol, mod:?T&Module, constraints:Seqable<MixCost>, new-vars:Tuple<AnyVar>, etc-entities:Seqable<Entity>) :
   BindBody(name,

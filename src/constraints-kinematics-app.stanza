@@ -677,8 +677,25 @@ val robot-simple-body-exp-spec5 =
 ;      JointExpSpec(`knee, 2, false, `ankle, `thigh)
 ;      ])
 
+public deftype DanceScheduler <: Scheduler
+defn DanceScheduler (b:Body, x-0:Float, x-1:Float) -> DanceScheduler :
+  val state = SchedulerState()
+  new DanceScheduler :
+    defmethod state (this) : state
+    defmethod body (this) : b
+    defmethod schedule (this) :
+      val vtab = to-hashtable<Symbol,Vertex> $ for v in vertices(b) seq : name(v) => v
+      val path = vtab[`path]
+      generate<Float> :
+        while true :
+          set-next(path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 5.0f))
+          yield(5.0f)
+          set-next(path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 8.0f))
+          yield(8.0f)
+
 defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
   val time = SymVar(`time, 0.0f, false, false)
+  var scheduler : Body -> Scheduler = SimpleScheduler
   val m =
     switch(top-name) :
       "robot-arm0" : KinematicsBody(`main, robot-arm-spec0)
@@ -698,6 +715,7 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
       ; "time-exp-kinematics-real3" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec3, `right-finger)
       ; "time-exp-kinematics-real4" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec4, `right-tip)
       "time-dancer-square" :
+        scheduler = DanceScheduler{_, x-0, x-1}
         val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
       "time-dancer-cube" :
@@ -741,7 +759,7 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
 
   ; println("RUNNING MODULE...")
 
-  run-module(m, time, SimpleScheduler)  
+  run-module(m, time, scheduler)  
 
 defn demo (top-name:String) :
   demo(top-name, top-n-0, top-n-1, top-n-2, top-x-0, top-x-1)
@@ -752,3 +770,4 @@ defn main () :
   demo(top-name)  
 
 main()
+

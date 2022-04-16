@@ -254,7 +254,7 @@ defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
     val b = body(s)
     set-t(s, t(s) + delta)
     if end-t(s) < t(s) :
-      set-end-t(s, t(s) + schedule(s))
+      set-end-t(s, t(s) + next(schedule(s)))
     set-tick(s, tick(s) + 1)
     set-x(time(v), t(s))
     next(b, tick(s), t(s))
