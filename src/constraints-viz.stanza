@@ -249,12 +249,12 @@ defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
   render(root(v), w, h)
   val run? = running?(v) or step?(v)
   if run? :
-
     val s = scheduler(v)
     val b = body(s)
     set-t(s, t(s) + delta)
-    if end-t(s) < t(s) :
-      set-end-t(s, t(s) + next(schedule(s)))
+    while t(s) > end-t(s) :
+      set-end-t(s, end-t(s) + next(schedule(s)))
+      println("TIME %_ %_" % [t(s), end-t(s)])
     set-tick(s, tick(s) + 1)
     set-x(time(v), t(s))
     next(b, tick(s), t(s))

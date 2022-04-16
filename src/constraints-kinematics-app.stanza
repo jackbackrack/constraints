@@ -353,6 +353,14 @@ defn TimeExpKinematicsPath (name:Symbol, radius:Float, time:SymVar, spec:Kinemat
   TimeExpKinematics(name, time, spec, [ path ],
     fn (m, verts) : [ MixCost(name, `centering, centering(m)), MixCost(name, `path, SameConstraint(exp(verts[tip]), exp(path))) ])
 
+defn TimeExpKinematicsTwoPaths (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec,
+                                left-path:Vertex, left-tip:Symbol, right-path:Vertex, right-tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ left-path, right-path ],
+    fn (m, verts) : [ MixCost(name, `centering, centering(m)),
+      MixCost(name, `left-path,  SameConstraint(exp(verts[left-tip]),  exp(left-path)))
+      MixCost(name, `right-path, SameConstraint(exp(verts[right-tip]), exp(right-path)))
+      ])
+
 defn TimeExpKinematicsPathCenter (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol) -> BindBody :
   TimeExpKinematics(name, time, spec, [ path ], fn (m, verts) : [
     MixCost(name, `centering, centering(m, CenterConstraint)),
@@ -680,18 +688,36 @@ val robot-simple-body-exp-spec5 =
 public deftype DanceScheduler <: Scheduler
 defn DanceScheduler (b:Body, x-0:Float, x-1:Float) -> DanceScheduler :
   val state = SchedulerState()
+  val vtab = to-hashtable<Symbol,Vertex> $ for v in vertices(b) seq : name(v) => v
+  val left-path = vtab[`left-path]
+  val right-path = vtab[`right-path]
+  defn set-costs (pred:Cost -> True|False) :
+    clear(costs(b))
+    add-all(costs(b), filter(pred, all-costs(b)))
+  for c in costs(b) do :
+    println(name(c))
+  val sched = 
+    generate<Float> :
+      while true :
+        set-costs({ name(_) != `main/right-path })
+        println("LPOINT")
+        set-next(left-path, PointInterpolator(V3f(x-1, x-1, 0.0f)))
+        yield(4.0f)
+        set-costs({ true })
+        println("RPOINT")
+        set-next(right-path, PointInterpolator(V3f(x-1, x-1, 0.0f)))
+        yield(4.0f)
+        set-costs({ name(_) != `main/right-path })
+        println("SQUARE")
+        set-next(left-path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f))
+        yield(4.0f)
+        ; println("CUBE")
+        ; set-next(left-path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 4.0f))
+        ; yield(4.0f)
   new DanceScheduler :
     defmethod state (this) : state
     defmethod body (this) : b
-    defmethod schedule (this) :
-      val vtab = to-hashtable<Symbol,Vertex> $ for v in vertices(b) seq : name(v) => v
-      val path = vtab[`path]
-      generate<Float> :
-        while true :
-          set-next(path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 5.0f))
-          yield(5.0f)
-          set-next(path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 8.0f))
-          yield(8.0f)
+    defmethod schedule (this) : sched
 
 defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
   val time = SymVar(`time, 0.0f, false, false)
@@ -714,8 +740,12 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
       ; "time-exp-kinematics-real" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec2, `right-tip)
       ; "time-exp-kinematics-real3" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec3, `right-finger)
       ; "time-exp-kinematics-real4" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec4, `right-tip)
-      "time-dancer-square" :
+      "time-dancer-two-paths" :
         scheduler = DanceScheduler{_, x-0, x-1}
+        val left-path  = PolyLinePath(`left-path,  mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        val right-path = PolyLinePath(`right-path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
+      "time-dancer-square" :
         val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
       "time-dancer-cube" :

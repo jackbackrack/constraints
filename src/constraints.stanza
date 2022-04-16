@@ -1992,7 +1992,7 @@ defn interval-bsearch (elts:Tuple<Float>, x:Float) -> Int :
 
 ; TODO: ONLY ONE STROKE FOR NOW
 ; TODO: REDO POLYLINE3f to have LineString3f as elements
-public defn PolyLinePathInterpolator (poly:PolyLine3f, speed:Float) -> (Int, Float) -> V3f :
+public defn PolyLinePathInterpolator (poly:PolyLine3f, duration:Float) -> (Int, Float) -> V3f :
   val stroke = strokes(poly)[0]
   val segs:Tuple<[V3f,V3f]> = to-tuple $ successive-pairs(stroke)
   val sums = to-tuple $ cat([0.0f], cumsum $ seq(fn (seg) : distance(seg[0], seg[1]), segs))
@@ -2000,6 +2000,7 @@ public defn PolyLinePathInterpolator (poly:PolyLine3f, speed:Float) -> (Int, Flo
   var last-tick:Int = -1
   var last-pt:V3f = V3f(0.0f, 0.0f, 0.0f)
   defn pt-of (tick:Int, it:Float) -> V3f :
+    val speed = tot-len / duration
     val t = speed * it
     if tick == last-tick :
       last-pt
@@ -2059,6 +2060,9 @@ public defn ParticleInterpolator (radius:Float) -> (Int, Float) -> V3f :
       ; acceleration = V3f(0.0f, 0.0f, 0.0f)
       position
   pt-of
+
+public defn PointInterpolator (pt:V3f) -> (Int, Float) -> V3f :
+  fn (tick, it) : pt
 
 public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
   val pt-of = ParticleInterpolator(radius)
