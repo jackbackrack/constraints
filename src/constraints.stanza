@@ -676,6 +676,28 @@ defn set-nx-off (c:Cost, v:ExpVar, off:Int) :
 defn set-dx-off (c:Cost, v:SymVar, off:Int) :
   dx-offs(c)[id(v)] = off
 
+defstruct SchedulerState :
+  t : Float with: ( setter => set-t, init => 0.0f )
+  end-t : Float with: ( setter => set-end-t, init => 0.0f )
+  tick : Int with: ( setter => set-tick, init => 0 )
+
+public deftype Scheduler
+public defmulti state (s:Scheduler) -> SchedulerState
+public defmulti body (s:Scheduler) -> Body
+public defmulti schedule (s:Scheduler) -> Float
+
+public defn t (s:Scheduler) -> Float : t(state(s))
+public defn end-t (s:Scheduler) -> Float : end-t(state(s))
+public defn tick (s:Scheduler) -> Int : tick(state(s))
+public defn set-t (s:Scheduler, t:Float) : set-t(state(s), t)
+public defn set-end-t (s:Scheduler, t:Float) : set-end-t(state(s), t)
+public defn set-tick (s:Scheduler, t:Int) : set-tick(state(s), t)
+
+public defstruct SimpleScheduler <: Scheduler :
+  state : SchedulerState with: (as-method => true, init => SchedulerState())
+  body : Body with: (as-method => true)
+  schedule : Float with: (as-method => true, init => 1.0f)
+
 public defstruct Body :
   vartab : HashTable<Symbol,AnyVar>
   vars : Tuple<AnyVar>
@@ -688,10 +710,9 @@ public defstruct Body :
   ; circles : Tuple<Circle>
   ; planes : Tuple<Plane>
   ; angles : Tuple<Angle>
-  costs : Tuple<Cost>
+  all-costs : Tuple<Cost>
+  costs : Vector<Cost> with: ( init => Vector<Cost>() )
   vertex-size : Float with: ( default => 0.25f )
-  t : Float with: ( setter => set-t, init => 0.0f )
-  tick : Int with: ( setter => set-tick, init => 0 )
 with:
   printer => true
 
@@ -1607,7 +1628,7 @@ public defn compile (b:Body, rt:JitRuntime) :
   println("LEN FUN VARS %_" % [length(funvars(b))])
   println("LEN SYM VARS %_" % [length(symvars(b))])
   println("LEN EXP VARS %_" % [length(expvars(b))])
-  for (c in costs(b), idx in 0 to false) do :
+  for (c in all-costs(b), idx in 0 to false) do :
     val sexp0 = value(c)
     val cost-sexp = collect-vars(sexp0)
     ; println(sexp0)
@@ -1668,19 +1689,15 @@ public defn compile (b:Body, rt:JitRuntime) :
     ; assign offsets
 
     val exps = instructions(deduper)
-
     for (av in used-allvars(c), off in length(exps) to false) do :
       set-x-off(c, av, off)
-
     for (v in filter(dx-update?, used-symvars(c)), tmp in de-tmps) do :
       ; lookup!(deduper, e(v))
       set-dx-off(c, v, offset(c, tmp, vartab(b)))
-
     for (v in used-expvars(c), tmp in exp-tmps) do :
       ; println("EV %_ VAR %_ EXP %_ OFF %_" % [id(v), name(e-var), e(v), off])
       ; lookup!(deduper, e(v))
       set-nx-off(c, v, offset(c, tmp, vartab(b)))
-
     set-cost-off(c, offset(c, cost-var, vartab(b)))
     set-gain-off(c, offset(c, gain-var, vartab(b)))
 
@@ -1695,12 +1712,15 @@ public defn compile (b:Body, rt:JitRuntime) :
           println("Already have a %_" % [id(v)])
         else :
           tab[id(v)] = v
+
     ; println("VARTAB %_" % [to-tuple $ vartab(b)])
     val machine = compile(exps, b, c, rt)
     ; for inst in insts(machine) do :
     ;   println(inst)
     set-machine(c, machine)
     ; println(b)
+
+  add-all(costs(b), all-costs(b))
 
 public defstruct EdgeExp :
   v0 : Vec3Exp

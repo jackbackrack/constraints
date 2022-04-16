@@ -27,15 +27,15 @@ defpackage constraints-viz :
   import stz/asmjit
 
 public deftype ConstraintsModel <: Model
-defmulti value (v:ConstraintsModel) -> Body
-defmulti set-value (v:ConstraintsModel, x:Body) -> False
+defmulti value (v:ConstraintsModel) -> Scheduler
+defmulti set-value (v:ConstraintsModel, x:Scheduler) -> False
 
-public defn ConstraintsModel (name:String, body:Body) :
+public defn ConstraintsModel (name:String, s:Scheduler) :
   val views = Vector<ConstraintsView>()
   new ConstraintsModel :
     defmethod name (this) : name
     defmethod views (this) : views
-    defmethod value (this) : body
+    defmethod value (this) : s
 
 public deftype ConstraintsView <: ModelView<ConstraintsModel>
 
@@ -129,7 +129,8 @@ public defn ConstraintsView (iname:String, c:ConstraintsModel, minibuf:StringBuf
   val res = new ConstraintsView :
     defmethod state (this) : state
     defmethod render (this, w:Float, h:Float) :
-      val sys = value(c)
+      val sched = value(c)
+      val sys = body(sched)
       val box = glu-project-dims(V3f(0.95f * w, 0.95f * h, 0.0f))
       val dms = dims(box)
       ;; println-all(["BOX = " box " DIMS = " dims])
@@ -168,8 +169,8 @@ public defn ConstraintsView (iname:String, c:ConstraintsModel, minibuf:StringBuf
 
 public deftype ConstraintsViz <: Viz
 public defmulti images (nv:ConstraintsViz) -> Tuple<Tuple<Tuple<Int>>>
-public defmulti body (nv:ConstraintsViz) -> Body
-public defmulti set-body (nv:ConstraintsViz, b:Body)
+public defmulti scheduler (nv:ConstraintsViz) -> Scheduler
+public defmulti set-scheduler (nv:ConstraintsViz, s:Scheduler)
 public defmulti running? (v:ConstraintsViz) -> True|False
 public defmulti set-running? (v:ConstraintsViz, x:True|False) -> False
 public defmulti step? (v:ConstraintsViz) -> True|False
@@ -179,16 +180,16 @@ public defmulti set-init? (v:ConstraintsViz, x:True|False) -> False
 public defmulti vars (v:ConstraintsViz) -> Tuple<AnyVar>
 public defmulti time (v:ConstraintsViz) -> SymVar
 
-public defn ConstraintsViz (win:Window, init-body:Body, vars:Tuple<AnyVar>, time:SymVar) :
+public defn ConstraintsViz (win:Window, init-sched:Scheduler, vars:Tuple<AnyVar>, time:SymVar) :
   val state = VizState(win)
-  var body = init-body
+  var sched = init-sched
   var running? = false
   var step? = false
   var init? = false
   new ConstraintsViz :
     defmethod state (this) : state
-    defmethod body (this) : body
-    defmethod set-body (this, b:Body) : body = b
+    defmethod scheduler (this) : sched
+    defmethod set-scheduler (this, s:Scheduler) : sched = s
     defmethod running? (this) : running?
     defmethod set-running? (this, b:True|False) : running? = b
     defmethod step? (this) : step?
@@ -221,7 +222,7 @@ defmethod init (v:ConstraintsViz) -> False :
   if not init?(v) :
     set-init?(v, true)
     start-init(v)
-    val placer = ConstraintsModel("placer", body(v))
+    val placer = ConstraintsModel("placer", scheduler(v))
     val placer-view = ConstraintsView("placer", placer, buf(v), keys(v), Keys(), Cmds(), Props(), xform(v))
     add(views(v), placer-view)
     for vr in vars(v) do :
@@ -248,19 +249,37 @@ defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
   render(root(v), w, h)
   val run? = running?(v) or step?(v)
   if run? :
-    set-t(body(v), t(body(v)) + delta)
-    set-tick(body(v), tick(body(v)) + 1)
-    set-x(time(v), t(body(v)))
-    next(body(v), tick(body(v)), t(body(v)))
+
+    val s = scheduler(v)
+    val b = body(s)
+    set-t(s, t(s) + delta)
+    if end-t(s) < t(s) :
+      set-end-t(s, t(s) + schedule(s))
+    set-tick(s, tick(s) + 1)
+    set-x(time(v), t(s))
+    next(b, tick(s), t(s))
     val timer = MicrosecondTimer("GRAD")
     start(timer)
     for i in 0 to top-num-gradient-steps do :
-      clear(body(v))
-      apply(body(v))
-      update(body(v))
+      clear(b)
+      apply(b)
+      update(b)
     stop(timer)
+
+    ; set-t(body(v), t(body(v)) + delta)
+    ; set-tick(body(v), tick(body(v)) + 1)
+    ; set-x(time(v), t(body(v)))
+    ; next(body(v), tick(body(v)), t(body(v)))
+    ; val timer = MicrosecondTimer("GRAD")
+    ; start(timer)
+    ; for i in 0 to top-num-gradient-steps ; do :
+    ;   clear(body(v))
+    ;   apply(body(v))
+    ;   update(body(v))
+    ; stop(timer)
+
     if top-show-cost? :
-      for c in costs(body(v)) do :
+      for c in costs(b) do :
         val dat = data(machine(c))
         println("COST %_ (%_)" % [dat[cost-off(c)], timer])
     glyph-stroking? = true
@@ -270,7 +289,7 @@ defmethod pick (v:ConstraintsViz, names:Seqable<V3i>) -> False :
   false
 
 defmethod drag (v:ConstraintsViz, names:Seqable<V3i>, delta:V2f) -> False :
-  val verts = vertices(body(v))
+  val verts = vertices(body(scheduler(v)))
   val xform = xform(view(tile(v)))
   for name in names do :
     val idx = x(name) - 1
@@ -328,7 +347,7 @@ install(screen-props, BoolProp("is-debug", { DEBUG? }, { DEBUG? = _ }))
 install(screen-props, BoolProp("is-time", { TIME? }, { TIME? = _ }))
 install(screen-props, BoolProp("is-disassemble", { disassemble? }, { disassemble? = _ }))
 
-public defn run-module (m:Module, time:SymVar) :
+public defn run-module (m:Module, time:SymVar, scheduler:Body -> Scheduler) :
   val rt = jit-runtime-new()
   *active-tiling* = false ; TODO -- INIT STATE -- CAN JUST DO RELOAD
   ensure-gui-init()
@@ -349,7 +368,7 @@ public defn run-module (m:Module, time:SymVar) :
   println("START COMPILING...")
   compile(c, rt)
   println("DONE COMPILING...")
-  val v = ConstraintsViz(win, c, symvars(c), time)
+  val v = ConstraintsViz(win, scheduler(c), symvars(c), time)
   set-throttling?(v, false)
   init(v)
   parse-args(props(v), command-line-arguments())
@@ -358,3 +377,5 @@ public defn run-module (m:Module, time:SymVar) :
   ;;   set-leds(v, Constraints(num-iters(a)))
   run(v)
 
+public defn run-module (m:Module, time:SymVar) :
+  run-module(m, time, SimpleScheduler)
