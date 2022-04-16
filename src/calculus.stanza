@@ -92,7 +92,7 @@ defn precedence (e:Exp) :
       (e:Add|Subtract) : 0
       (e:Multiply|Divide|Power) : 1
       (e:Power) : 2
-      (e:Const|Variable|Define|Log|Acos|Sin|Cos|Atan2|Print) : 3
+      (e:Const|Variable|Temporary|Define|Log|Acos|Sin|Cos|Atan2|Print) : 3
 
 ;Print behaviour for expressions
 defmethod print (o:OutputStream, e:Exp) :

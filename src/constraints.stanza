@@ -809,27 +809,39 @@ public defn apply (b:Body) :
     set-dx(v, 0.0f)
   for v in expvars(b) do :
     set-nx(v, x(v))
-  for c in costs(b) do :
+  val base-machine = machine(costs(b)[0])
+  for (c in costs(b), idx in 0 to false) do :
     ; println("COST %_" % [name(c)])
     val machine = machine(c)
     val dat = data(machine)
     for v in used-allvars(c) do :
+      ; println("%_: %_" % [name(v), x-off(c, v)])
       dat[x-off(c, v)] = x(v)
+    if idx > 0 :
+      val len = length(insts(machine))
+      dat[len to (len + length(insts(base-machine)))] = data(base-machine)
+      ; for i in 0 to length(insts(base-machine)) do :
+      ;   dat[i + len] = data(base-machine)[i]
+      ; dat[len to (len + length(insts(base-machine)))] = data(base-machine)
+      ; println("BASE %_ UNTIL %_" % [len, len + length(insts(base-machine))])
     run(machine)
     ; println("COST %_ ? %_" % [eval(cost(b), vars(b), 0), dat[cost-off(c)]])
-    ; println("COST %_" % [dat[cost-off(c)]])
+    ; println("COST %_ %_" % [name(c), dat[cost-off(c)]])
     for v in used-symvars(c) do :
       ; val dx = apply(v, vars(b))
       if dx-update?(v) :
         if dat[dx-off(c, v)] != 0.0f :
           ; println("%_ X[%_] %_ DX[%_] %_" % [id(v), x-off(c, v), dat[x-off(c, v)], dx-off(c, v), dat[dx-off(c, v)]])
-          ; println("  %_ DX[%_] %_" % [id(v), dx-off(c, v), dat[dx-off(c, v)]])
+          ; println("  %_ DX[%_] GAIN[%_] %_ %_" % [id(v), dx-off(c, v), gain-off(c), dat[gain-off(c)], dat[dx-off(c, v)]])
           set-dx(v, dx(v) - dat[gain-off(c)] * dat[dx-off(c, v)])
     ; TODO: run these in special machine
     for v in used-expvars(c) do :
       val x = dat[nx-off(c, v)]
       set-nx(v, x)
       ; println("%_[%_] = %_" % [v, x-off(c, v), x])
+    ; for (d in data(machine), i in 0 to false) do :
+    ;   println("  %_: %_" % [i, d])
+
   for v in expvars(b) do :
     set-x(v, nx(v))
 
@@ -841,7 +853,7 @@ public var DELTA:Float = 0.1f * 0.05f
 
 defmethod update (v:SymVar) :
   if dx-update?(v) :
-    ; println("%_ %_ + %_ * %_" % [v, x(v), DELTA, dx(v)])
+    ; println("%_ %_ + %_ * %_" % [name(v), x(v), DELTA, dx(v)])
     val new-x0 = x(v) + DELTA * dx(v)
     val new-x = new-x0
     ; val new-x = match(limits(v)) :
@@ -883,57 +895,104 @@ public defmulti id (d:Deduper) -> Int
 public defmulti lookup (d:Deduper, e:Exp) -> Temporary|Variable|False
 public defmulti dedup (d:Deduper, e:Exp) -> Temporary|Variable
 public defmulti instructions (d:Deduper) -> Vector<Exp>
+public defmulti count (d:Deduper) -> Int
+public defmulti parent-count (d:Deduper) -> Int
+public defmulti dump (d:Deduper) -> False
 
-public defn Deduper (id:Int) :
+public defn Deduper (id:Int, parent:Deduper|False) :
   val tab = HashTable<Exp,Temporary|Variable>()
   val exps = Vector<Exp>()
+  var count:Int = 0
+  var parent-count:Int = 0
   new Deduper :
     defmethod id (this) : id
     defmethod lookup (this, e:Exp) -> Temporary|Variable|False :
       match(e:Variable|Temporary) : e
       else: get?(tab, e)
+;     defmethod dedup (this, e:Exp) -> Temporary|Variable :
+;       let loop (e:Exp = e) :
+;         val tmp = match(parent:Deduper) :
+;           val tmp = lookup(parent, e)
+;           match(tmp:Temporary|Variable) :
+;             ; println("FOUND %_" % [kind(e)])
+;             parent-count = parent-count + 1
+;             tmp
+;           ; else :
+;           ;   println("NO %_" % [e])
+;         match(tmp:Temporary) :
+;           tmp
+;         else :
+;           val c = map(loop, e)
+;           match(c) :
+;             (c:Variable) :
+;               c
+;             (c:Exp) :
+;               if key?(tab, c) :
+;                 count = count + 1
+;                 tab[c]
+;               else :
+;                 add(exps, c)
+;                 val tmp = Temporary(id, length(tab))
+;                 tab[c] = tmp
+;                 tmp
     defmethod dedup (this, e:Exp) -> Temporary|Variable :
       let loop (e:Exp = e) :
         val c = map(loop, e)
         match(c) :
-          (e:Variable) :
-            e
-          ; (e:Define) :
-          ;   define-tmp(name(e), a(e))
-          (e:Exp) :
-            if key?(tab, e) :
+          (c:Variable) :
+            c
+          (c:Exp) :
+            if key?(tab, c) :
+              count = count + 1
               tab[c]
             else :
-              add(exps, e)
-              val tmp = Temporary(id, length(tab))
-              tab[c] = tmp
-              tmp
+              val tmp = match(parent:Deduper) :
+                val tmp = lookup(parent, c)
+                match(tmp:Temporary|Variable) :
+                  ; println("FOUND %_" % [kind(e)])
+                  parent-count = parent-count + 1
+                  tmp
+                ; else :
+                ;   println("NO %_" % [e])
+              match(tmp:Temporary) :
+                tmp
+              else :
+                add(exps, c)
+                val tmp = Temporary(id, length(tab))
+                tab[c] = tmp
+                tmp
     defmethod instructions (this) -> Vector<Exp> :
       exps
+    defmethod count (this) : count
+    defmethod parent-count (this) : parent-count
+    defmethod dump (this) :
+      for elt in tab do :
+        println("%_ = %_" % [value(elt), key(elt)])
 
 defn lookup! (d:Deduper, e:Exp) -> Temporary|Variable :
   lookup(d, e) as Temporary|Variable
 
-defn offset (c:Cost, e:Exp, var-table:HashTable<Symbol,AnyVar>) :
+defn offset (c:Cost, e:Exp, base-offset:Int, var-table:HashTable<Symbol,AnyVar>) :
   match(e) :
     (e:Variable) :  x-off(c, var-table[name(e)])
-    (e:Temporary) : off(e)
+    (e:Temporary) : off(e) + (0 when namespace(e) > 0 else base-offset)
 
-defn translate (c:Cost, e:Exp, var-table:HashTable<Symbol,AnyVar>, pc:Int) -> Inst :
+defn translate (c:Cost, e:Exp, base-offset:Int, var-table:HashTable<Symbol,AnyVar>, pc:Int) -> Inst :
+  defn off (x:Exp) : offset(c, x, base-offset, var-table)
   match(e) :
     (e:Const) : LoadOp(pc, value(e))
-    (e:Define) : MoveOp(pc, offset(c, a(e), var-table))
-    (e:Log) : LogOp(pc, offset(c, a(e), var-table))
-    (e:Acos) : AcosOp(pc, offset(c, a(e), var-table))
-    (e:Sin) : SinOp(pc, offset(c, a(e), var-table))
-    (e:Cos) : CosOp(pc, offset(c, a(e), var-table))
-    (e:Atan2) : Atan2Op(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
-    (e:Add) : AddOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
-    (e:Subtract) : SubtractOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
-    (e:Multiply) : MultiplyOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
-    (e:Divide) : DivideOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
-    (e:Power) : PowerOp(pc, offset(c, a(e), var-table), offset(c, b(e), var-table))
-    (e:Print) : PrintOp(pc, id(e), offset(c, a(e), var-table))
+    (e:Define) : MoveOp(pc, off(a(e)))
+    (e:Log) : LogOp(pc, off(a(e)))
+    (e:Acos) : AcosOp(pc, off(a(e)))
+    (e:Sin) : SinOp(pc, off(a(e)))
+    (e:Cos) : CosOp(pc, off(a(e)))
+    (e:Atan2) : Atan2Op(pc, off(a(e)), off(b(e)))
+    (e:Add) : AddOp(pc, off(a(e)), off(b(e)))
+    (e:Subtract) : SubtractOp(pc, off(a(e)), off(b(e)))
+    (e:Multiply) : MultiplyOp(pc, off(a(e)), off(b(e)))
+    (e:Divide) : DivideOp(pc, off(a(e)), off(b(e)))
+    (e:Power) : PowerOp(pc, off(a(e)), off(b(e)))
+    (e:Print) : PrintOp(pc, id(e), off(a(e)))
 
 defmethod print (o:OutputStream, i:Inst) :
   match(i) :
@@ -962,14 +1021,15 @@ public var jit?:True|False = true
 public var disassemble?:True|False = false
 public var show-code-size?:True|False = true
 
-public defn compile (exps:Vector<Exp>, b:Body, c:Cost, rt:JitRuntime) -> Machine :
+public defn compile (exps:Vector<Exp>, b:Body, c:Cost, base?:True|False, base-reserved-size:Int, rt:JitRuntime) -> Machine :
   val insts = to-tuple $ for (e in exps, pc in 0 to false) seq :
-    translate(c, e, vartab(b), pc)
+    translate(c, e, 0 when base? else length(exps), vartab(b), pc)
   val jitter = jit ; jit-old when OLD? 
   val save-offs = to-intset $ cat-all $ [seq(dx-off{c, _}, symvars(b)), seq(x-off{c, _}, expvars(b)), seq(nx-off{c, _}, expvars(b))]
   add(save-offs, cost-off(c))
   add(save-offs, gain-off(c))
-  Machine(FloatArray(length(insts) + length(vartab(b)), 0.0f), insts,
+  add-all(save-offs, 0 to length(exps)) when base?
+  Machine(FloatArray(length(insts) + base-reserved-size + length(vartab(b)), 0.0f), insts,
           jitter(insts, save-offs, rt, disassemble?, STANDARD-OUTPUT-STREAM as FileOutputStream) when jit?)
 
 val all-saved-registers = [rbx, rcx, rsi, rdi rdx, r8, r9, r10, r11]
@@ -1635,11 +1695,15 @@ public defn compile (b:Body, rt:JitRuntime) :
   println("LEN FUN VARS %_" % [length(funvars(b))])
   println("LEN SYM VARS %_" % [length(symvars(b))])
   println("LEN EXP VARS %_" % [length(expvars(b))])
+  var base-deduper:False|Deduper = false
+  var base-machine-reserved-size:Int = 0
   for (c in all-costs(b), idx in 0 to false) do :
+    val base? = idx == 0
     val sexp0 = value(c)
     val cost-sexp = collect-vars(sexp0)
     ; println(sexp0)
-    val deduper = Deduper(idx)
+    val deduper = Deduper(idx, base-deduper)
+    if base? : base-deduper = deduper
     println("--- COMPILING COST %_" % [name(c)])
     ; println(value(c))
     val compiler-timer = MillisecondTimer("COMPILING")
@@ -1648,9 +1712,9 @@ public defn compile (b:Body, rt:JitRuntime) :
     val gain-var = dedup(deduper, gain-sexp)
     val cost-var = dedup(deduper, cost-sexp)
     val used-names = to-hashset<Symbol> $ cat(vars(gain-sexp), vars(cost-sexp))
-    set-used-funvars(c, to-tuple $ for v in funvars(b) filter : idx == 0 or used-names[id(v)])
-    set-used-symvars(c, to-tuple $ for v in symvars(b) filter : idx == 0 or used-names[id(v)])
-    set-used-expvars(c, to-tuple $ for v in expvars(b) filter : idx == 0 or used-names[id(v)])
+    set-used-funvars(c, to-tuple $ for v in funvars(b) filter : base? or used-names[id(v)])
+    set-used-symvars(c, to-tuple $ for v in symvars(b) filter : base? or used-names[id(v)])
+    set-used-expvars(c, to-tuple $ for v in expvars(b) filter : base? or used-names[id(v)])
     set-used-allvars(c, to-tuple $ cat-all $ [used-funvars(c), used-symvars(c), used-expvars(c)])
     println("USED-FUNVARS %_" % [used-funvars(c)])
     ; println("COST LEN %_" % [length(instructions(deduper))])
@@ -1687,6 +1751,11 @@ public defn compile (b:Body, rt:JitRuntime) :
     val exp-tmps = to-tuple $ for v in used-expvars(c) seq :
       dedup(deduper, e(v))
 
+    if base? :
+      for sv in filter(dx-update?, used-symvars(c)) do :
+        for ev in used-expvars(c) do :
+          dedup(deduper, differentiate(exp(ev), id(sv)))
+
     stop(derivative-timer)
     println(derivative-timer)
     println(differentiate-timer)
@@ -1696,17 +1765,28 @@ public defn compile (b:Body, rt:JitRuntime) :
     ; assign offsets
 
     val exps = instructions(deduper)
-    for (av in used-allvars(c), off in length(exps) to false) do :
+
+    ; println("--- DUMP")
+    ; dump(deduper)
+    ; println("--- EXPS")
+    ; for (e in exps, i in 0 to false) do :
+    ;   println("TMP%_ = %_" % [i, e])
+
+    println("--- FOUND %_ + %_ OUT OF %_" % [count(deduper), parent-count(deduper), length(exps)])
+    val base-offset = 0 when base? else length(exps)
+    for (av in used-allvars(c), off in (length(exps) + base-machine-reserved-size) to false) do :
       set-x-off(c, av, off)
     for (v in filter(dx-update?, used-symvars(c)), tmp in de-tmps) do :
       ; lookup!(deduper, e(v))
-      set-dx-off(c, v, offset(c, tmp, vartab(b)))
+      set-dx-off(c, v, offset(c, tmp, base-offset, vartab(b)))
     for (v in used-expvars(c), tmp in exp-tmps) do :
       ; println("EV %_ VAR %_ EXP %_ OFF %_" % [id(v), name(e-var), e(v), off])
       ; lookup!(deduper, e(v))
-      set-nx-off(c, v, offset(c, tmp, vartab(b)))
-    set-cost-off(c, offset(c, cost-var, vartab(b)))
-    set-gain-off(c, offset(c, gain-var, vartab(b)))
+      set-nx-off(c, v, offset(c, tmp, base-offset, vartab(b)))
+    set-cost-off(c, offset(c, cost-var, base-offset, vartab(b)))
+    println("COST-VAR %_ OFF %_" % [cost-var, cost-off(c)])
+    set-gain-off(c, offset(c, gain-var, base-offset, vartab(b)))
+    println("GAIN-VAR %_ OFF %_" % [gain-var, gain-off(c)])
 
     ; println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(vartab(b))])
     if length(vartab(b)) != length(vars(b)) :
@@ -1721,10 +1801,14 @@ public defn compile (b:Body, rt:JitRuntime) :
           tab[id(v)] = v
 
     ; println("VARTAB %_" % [to-tuple $ vartab(b)])
-    val machine = compile(exps, b, c, rt)
+    val machine = compile(exps, b, c, base?, base-machine-reserved-size, rt)
     ; for inst in insts(machine) do :
     ;   println(inst)
     set-machine(c, machine)
+    if base? :
+      base-machine-reserved-size = length(insts(machine))
+      println("BASE-MACHINE-RESERVED-SIZE %_" % [base-machine-reserved-size])
+
     ; println(b)
 
   add-all(costs(b), all-costs(b))
@@ -1865,7 +1949,7 @@ public defn HorizontalConstraint (e:EdgeExp) -> Exp :
 
 public defn MidPointConstraint (vecs:Tuple<Vec3Exp>, mid:Vec3Exp) -> Exp :
   val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
-  sqerr(magnitude(ctr - mid))
+  magnitude2(ctr - mid)
   
 public defn CenterXConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
   val ctr = reduce(fn (a:Exp, b:Exp) : a + b, seq(x, vecs)) / Const(to-float(length(vecs)))
@@ -1873,19 +1957,22 @@ public defn CenterXConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
   
 public defn CenterXYConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
   val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
-  sqerr(magnitude(xy(ctr - desired)))
+  magnitude2(xy(ctr - desired))
   
 public defn CenterXZConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
   val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
-  sqerr(magnitude(xz(ctr - desired)))
+  magnitude2(xz(ctr - desired))
   
 public defn CenterConstraint (vecs:Tuple<Vec3Exp>, desired:Vec3Exp) -> Exp :
   val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
-  sqerr(magnitude(ctr - desired))
+  magnitude2(ctr - desired)
   
 public defn SameVecConstraint (vecs:Tuple<Vec3Exp>) -> Exp :
   val ctr = reduce(fn (a:Vec3Exp, b:Vec3Exp) : a + b, vecs) / Const(to-float(length(vecs)))
-  sum $ for vec in vecs seq : sqerr(magnitude(ctr - vec))
+  sum $ for vec in vecs seq : magnitude2(ctr - vec)
+
+public defn DistanceConstraint (v1:Vec3Exp, v2:Vec3Exp, d:Exp) -> Exp :
+  SameConstraint(distance(v1, v2), d)
 
 ; TODO: GENERALIZE
 public defn OnLineConstraint (p:Vec3Exp, a:Vec3Exp, b:Vec3Exp, d:Exp) -> Exp :
@@ -1900,6 +1987,9 @@ public defn OnLineConstraint (a:EdgeExp, b:EdgeExp, d:Exp) -> Exp :
 
 public defn SameVertexConstraint (vertices:Tuple<Vertex>) -> Exp :
   SameVecConstraint(to-tuple $ seq(exp, vertices))
+
+public defn DistanceConstraint (v1:Vertex, v2:Vertex, distance:Exp) -> Exp :
+  DistanceConstraint(exp(v1), exp(v2), distance)
 
 public defn SameEdgeConstraint (edges:Tuple<EdgeExp>) -> Exp :
   SameVecConstraint(to-tuple $ seq(v0, edges)) + SameVecConstraint(to-tuple $ seq(v1, edges))

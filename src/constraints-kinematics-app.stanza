@@ -329,7 +329,8 @@ defn curl-angles (m:KinematicsExpBody) -> Exp :
 
 defn limit-angle (a:Exp) -> Exp :
   defn limit (a:Exp) : exp(a * a)
-  limit(Const(3.0f / PI-F) * a)
+  ; limit(Const(3.0f / PI-F) * a)
+  limit(Const(2.0f / PI-F) * a)
 
 defn limit-angles (m:KinematicsExpBody) -> Exp :
   ; sum $ seq(fn (l) : limit-angle(angle(l)), for l in values(link-table(m)) filter : axis(l) == 2)
@@ -342,6 +343,13 @@ defn straighten (m:KinematicsExpBody) -> Exp :
 defn basing (m:KinematicsExpBody, origin:Float) -> Exp :
   Const(10.0f) * SameVecConstraint([exp(vertex-table(m)[root(specs(m))]) Const(V3f(0.0f, origin, 0.0f))])
 
+defn repel (v1:Vec3Exp, v2:Vec3Exp, d:Exp) -> Exp :
+  val x = distance2(v1, v2)
+  d * exp(Const(-1.0f) * x)
+
+defn repel (v1:Vertex, v2:Vertex, d:Exp) -> Exp :
+  repel(exp(v1), exp(v2), d)
+
 defn TimeExpKinematics (name:Symbol, time:SymVar, spec:KinematicsExpSpec, new-entities:Seqable<Entity>,
                         new-constraints:(KinematicsExpBody, HashTable<Symbol,Vertex>) -> Seqable<MixCost>) -> BindBody :
   val m = KinematicsExpBody(`main, spec)
@@ -349,14 +357,25 @@ defn TimeExpKinematics (name:Symbol, time:SymVar, spec:KinematicsExpSpec, new-en
            cat([ MixCost(name, `basing, basing(m, -10.0f))], new-constraints(m, vertex-table(m))),
            to-tuple $ cat-all $ seq(vars, new-entities), new-entities)
 
+defn TimeExpKinematicsRepel (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, left-tip:Symbol, right-tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ ],
+    fn (m, verts) : [ MixCost(name, `repel, repel(verts[left-tip], verts[right-tip], Const(2.0f))) ])
+
 defn TimeExpKinematicsPath (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol) -> BindBody :
   TimeExpKinematics(name, time, spec, [ path ],
     fn (m, verts) : [ MixCost(name, `centering, centering(m)), MixCost(name, `path, SameConstraint(exp(verts[tip]), exp(path))) ])
+
+defn TimeExpKinematicsSimplePath (name:Symbol, time:SymVar, spec:KinematicsExpSpec, path:Vertex, tip:Symbol) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ path ],
+    fn (m, verts) : [ MixCost(name, `path, SameConstraint(exp(verts[tip]), exp(path))) ])
 
 defn TimeExpKinematicsTwoPaths (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec,
                                 left-path:Vertex, left-tip:Symbol, right-path:Vertex, right-tip:Symbol) -> BindBody :
   TimeExpKinematics(name, time, spec, [ left-path, right-path ],
     fn (m, verts) : [ MixCost(name, `centering, centering(m)),
+      MixCost(name, `limit, limit-angles(m)),
+      MixCost(name, `repel, repel(verts[right-tip], verts[left-tip], Const(2.0f)))
+      ; MixCost(name, `touch, Const(0.5f), DistanceConstraint(verts[right-tip], verts[left-tip], Const(1.0f)))
       MixCost(name, `left-path,  SameConstraint(exp(verts[left-tip]),  exp(left-path)))
       MixCost(name, `right-path, SameConstraint(exp(verts[right-tip]), exp(right-path)))
       ])
@@ -691,26 +710,48 @@ defn DanceScheduler (b:Body, x-0:Float, x-1:Float) -> DanceScheduler :
   val vtab = to-hashtable<Symbol,Vertex> $ for v in vertices(b) seq : name(v) => v
   val left-path = vtab[`left-path]
   val right-path = vtab[`right-path]
-  defn set-costs (pred:Cost -> True|False) :
+  val base-costs = [ `main/base `main/basing `main/centering `main/limit `main/repel ]
+  defn set-costs-pred (pred:Cost -> True|False) :
     clear(costs(b))
     add-all(costs(b), filter(pred, all-costs(b)))
+    for c in costs(b) do :
+      println(name(c))
+  defn set-costs (costs:Tuple<Symbol>) :
+    set-costs-pred({ contains?(cat(base-costs, costs), name(_)) })
   for c in costs(b) do :
     println(name(c))
   val sched = 
     generate<Float> :
+      var last-pt = V3f(0.0f, 0.0f, 0.0f)
+      set-next(right-path, PointInterpolator(last-pt))
       while true :
-        set-costs({ name(_) != `main/right-path })
-        println("LPOINT")
-        set-next(left-path, PointInterpolator(V3f(x-1, x-1, 0.0f)))
-        yield(4.0f)
-        set-costs({ true })
+        ; set-costs([ `main/left-path `main/right-path ])
+        ; set-next(right-path, PointInterpolator(last-pt))
+        ; val pt = rnd(dims-to-box $ xyz(x-0))
+        ; println("LPOINT %_ %_" % [last-pt, pt])
+        ; set-next(left-path, PointInterpolator(pt))
+        ; yield(2.0f)
+        ; set-costs([ `main/left-path `main/; touch ])
+        ; set-costs([ `main/; touch ])
+        ; println("TOUCH")
+        ; yield(2.0f)
+        ; last-pt = pt
+
+        set-costs([ `main/left-path `main/right-path ])
+        val pt = rnd(dims-to-box $ xyz(x-0))
+        println("LPOINT %_" % [pt])
+        set-next(left-path, PointInterpolator(pt))
+        yield(2.0f)
+        set-costs([ `main/left-path `main/right-path ])
+        set-next(right-path, PointInterpolator(pt))
+        ; set-costs([ `main/touch ])
         println("RPOINT")
-        set-next(right-path, PointInterpolator(V3f(x-1, x-1, 0.0f)))
-        yield(4.0f)
-        set-costs({ name(_) != `main/right-path })
-        println("SQUARE")
-        set-next(left-path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f))
-        yield(4.0f)
+        yield(2.0f)
+
+        ; set-costs([ `main/right-path ])
+        ; println("SQUARE")
+        ; set-next(left-path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f))
+        ; yield(4.0f)
         ; println("CUBE")
         ; set-next(left-path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 4.0f))
         ; yield(4.0f)
@@ -745,6 +786,9 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float) :
         val left-path  = PolyLinePath(`left-path,  mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         val right-path = PolyLinePath(`right-path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
+      "time-dancer-simple-path" :
+        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        TimeExpKinematicsSimplePath(`main, time, robot-arm-exp-spec, path, `hand)
       "time-dancer-square" :
         val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
