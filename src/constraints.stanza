@@ -627,10 +627,10 @@ public defn Angle (id:Symbol, e0:Edge, e1:Edge, measure?:True|False) -> Angle :
 
 public defstruct MixCost :
   name  : Symbol
-  gain  : Exp
+  gain  : Float with: (setter => set-gain, default => 1.0f)
   value : Exp
 
-public defn MixCost (value:Exp) -> MixCost : MixCost(`dummy, Const(1.0f), value)
+public defn MixCost (value:Exp) -> MixCost : MixCost(`dummy, value)
 
 public deftype Module <: Entity
 public defmulti entities (m:Module) -> Tuple<Entity>
@@ -652,9 +652,10 @@ public defn vertices (m:Module) -> Seqable<Vertex> :
 
 public defstruct Cost :
   name : Symbol
-  gain : Exp 
+  gain  : Float with: (setter => set-gain, default => 1.0f)
+  ; gain : Exp
   value : Exp
-  gain-off : Int with: ( setter => set-gain-off, init => -1 )
+  ; gain-off : Int with: ( setter => set-gain-off, init => -1 )
   cost-off : Int with: ( setter => set-cost-off, init => -1 )
   x-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
   nx-offs : HashTable<Symbol,Int> with: ( init => HashTable<Symbol,Int>(-1) )
@@ -683,27 +684,37 @@ defn set-nx-off (c:Cost, v:ExpVar, off:Int) :
 defn set-dx-off (c:Cost, v:SymVar, off:Int) :
   dx-offs(c)[id(v)] = off
 
+public defstruct Phrase :
+  end-t : Float
+  hook : Float -> ? with: ( default => { false } )
+
 public defstruct SchedulerState :
   t : Float with: ( setter => set-t, init => 0.0f )
+  start-t : Float with: ( setter => set-start-t, init => 0.0f )
   end-t : Float with: ( setter => set-end-t, init => 0.0f )
   tick : Int with: ( setter => set-tick, init => 0 )
+  hook : Float -> ? with: ( setter => set-hook, init => { false } )
 
 public deftype Scheduler
 public defmulti state (s:Scheduler) -> SchedulerState
 public defmulti body (s:Scheduler) -> Body
-public defmulti schedule (s:Scheduler) -> Seq<Float>
+public defmulti schedule (s:Scheduler) -> Seq<Phrase>
 
 public defn t (s:Scheduler) -> Float : t(state(s))
+public defn start-t (s:Scheduler) -> Float : start-t(state(s))
 public defn end-t (s:Scheduler) -> Float : end-t(state(s))
 public defn tick (s:Scheduler) -> Int : tick(state(s))
+public defn hook (s:Scheduler) -> Float -> ? : hook(state(s))
 public defn set-t (s:Scheduler, t:Float) : set-t(state(s), t)
+public defn set-start-t (s:Scheduler, t:Float) : set-start-t(state(s), t)
 public defn set-end-t (s:Scheduler, t:Float) : set-end-t(state(s), t)
 public defn set-tick (s:Scheduler, t:Int) : set-tick(state(s), t)
+public defn set-hook (s:Scheduler, h:Float -> ?) : set-hook(state(s), h)
 
 public defstruct SimpleScheduler <: Scheduler :
   state : SchedulerState with: (as-method => true, init => SchedulerState())
   body : Body with: (as-method => true)
-  schedule : Seq<Float> with: (as-method => true, init => repeatedly({ 1.0f }))
+  schedule : Seq<Phrase> with: (as-method => true, init => repeatedly({ Phrase(1.0f) }))
 
 public defstruct Body :
   vartab : HashTable<Symbol,AnyVar>
@@ -756,7 +767,7 @@ public defn Body (top:Module) -> Body :
   val expvars = to-tuple $ filter-by<ExpVar>(vars)
   val vartab = to-hashtable<Symbol,AnyVar> $ for v in vars seq : id(v) => v
   Body(vartab, vars, funvars, symvars, expvars, entities, vertices, ; edges, circles, planes, angles,
-       to-tuple $ cat([ Cost(add-suffix(name(top), `base), Const(1.0f), total-cost(top)) ],
+       to-tuple $ cat([ Cost(add-suffix(name(top), `base), 1.0f, total-cost(top)) ],
                         for mc in all-mix-costs(top) seq : Cost(name(mc), gain(mc), value(mc))))
 
 defmethod print (o:OutputStream, tab:HashTable<?,?>) :
@@ -833,7 +844,8 @@ public defn apply (b:Body) :
         if dat[dx-off(c, v)] != 0.0f :
           ; println("%_ X[%_] %_ DX[%_] %_" % [id(v), x-off(c, v), dat[x-off(c, v)], dx-off(c, v), dat[dx-off(c, v)]])
           ; println("  %_ DX[%_] GAIN[%_] %_ %_" % [id(v), dx-off(c, v), gain-off(c), dat[gain-off(c)], dat[dx-off(c, v)]])
-          set-dx(v, dx(v) - dat[gain-off(c)] * dat[dx-off(c, v)])
+          ; set-dx(v, dx(v) - dat[gain-off(c)] * dat[dx-off(c, v)])
+          set-dx(v, dx(v) - gain(c) * dat[dx-off(c, v)])
     ; TODO: run these in special machine
     for v in used-expvars(c) do :
       val x = dat[nx-off(c, v)]
@@ -851,10 +863,19 @@ public defn clear (v:SymVar) :
 ; public var DELTA:Float = 0.05f
 public var DELTA:Float = 0.1f * 0.05f
 
+public var UPDATE-STD-DEV:Float = 0.01f
+
+val normal-fac = 1.0f / sqrt(2.0f * PI-F)
+
+public defn normal (x:Float, u:Float, s:Float) -> Float :
+  val e = (x - u) / s
+  exp(-0.5f * e * e)
+
 defmethod update (v:SymVar) :
   if dx-update?(v) :
     ; println("%_ %_ + %_ * %_" % [name(v), x(v), DELTA, dx(v)])
-    val new-x0 = x(v) + DELTA * dx(v)
+    val update = DELTA * dx(v)
+    val new-x0 = x(v) + normal(update, 0.0f, UPDATE-STD-DEV) * update
     val new-x = new-x0
     ; val new-x = match(limits(v)) :
     ;   (b:Box1f) : max(lo(b), min(hi(b), new-x0))
@@ -909,32 +930,6 @@ public defn Deduper (id:Int, parent:Deduper|False) :
     defmethod lookup (this, e:Exp) -> Temporary|Variable|False :
       match(e:Variable|Temporary) : e
       else: get?(tab, e)
-;     defmethod dedup (this, e:Exp) -> Temporary|Variable :
-;       let loop (e:Exp = e) :
-;         val tmp = match(parent:Deduper) :
-;           val tmp = lookup(parent, e)
-;           match(tmp:Temporary|Variable) :
-;             ; println("FOUND %_" % [kind(e)])
-;             parent-count = parent-count + 1
-;             tmp
-;           ; else :
-;           ;   println("NO %_" % [e])
-;         match(tmp:Temporary) :
-;           tmp
-;         else :
-;           val c = map(loop, e)
-;           match(c) :
-;             (c:Variable) :
-;               c
-;             (c:Exp) :
-;               if key?(tab, c) :
-;                 count = count + 1
-;                 tab[c]
-;               else :
-;                 add(exps, c)
-;                 val tmp = Temporary(id, length(tab))
-;                 tab[c] = tmp
-;                 tmp
     defmethod dedup (this, e:Exp) -> Temporary|Variable :
       let loop (e:Exp = e) :
         val c = map(loop, e)
@@ -949,11 +944,8 @@ public defn Deduper (id:Int, parent:Deduper|False) :
               val tmp = match(parent:Deduper) :
                 val tmp = lookup(parent, c)
                 match(tmp:Temporary|Variable) :
-                  ; println("FOUND %_" % [kind(e)])
                   parent-count = parent-count + 1
                   tmp
-                ; else :
-                ;   println("NO %_" % [e])
               match(tmp:Temporary) :
                 tmp
               else :
@@ -1027,7 +1019,7 @@ public defn compile (exps:Vector<Exp>, b:Body, c:Cost, base?:True|False, base-re
   val jitter = jit ; jit-old when OLD? 
   val save-offs = to-intset $ cat-all $ [seq(dx-off{c, _}, symvars(b)), seq(x-off{c, _}, expvars(b)), seq(nx-off{c, _}, expvars(b))]
   add(save-offs, cost-off(c))
-  add(save-offs, gain-off(c))
+  ; add(save-offs, gain-off(c))
   add-all(save-offs, 0 to length(exps)) when base?
   Machine(FloatArray(length(insts) + base-reserved-size + length(vartab(b)), 0.0f), insts,
           jitter(insts, save-offs, rt, disassemble?, STANDARD-OUTPUT-STREAM as FileOutputStream) when jit?)
@@ -1708,10 +1700,11 @@ public defn compile (b:Body, rt:JitRuntime) :
     ; println(value(c))
     val compiler-timer = MillisecondTimer("COMPILING")
     start(compiler-timer)
-    val gain-sexp = collect-vars(gain(c))
-    val gain-var = dedup(deduper, gain-sexp)
+    ; val gain-sexp = collect-vars(gain(c))
+    ; val gain-var = dedup(deduper, gain-sexp)
     val cost-var = dedup(deduper, cost-sexp)
-    val used-names = to-hashset<Symbol> $ cat(vars(gain-sexp), vars(cost-sexp))
+    ; val used-names = to-hashset<Symbol> $ cat(vars(gain-sexp), vars(cost-sexp))
+    val used-names = to-hashset<Symbol> $ vars(cost-sexp)
     set-used-funvars(c, to-tuple $ for v in funvars(b) filter : base? or used-names[id(v)])
     set-used-symvars(c, to-tuple $ for v in symvars(b) filter : base? or used-names[id(v)])
     set-used-expvars(c, to-tuple $ for v in expvars(b) filter : base? or used-names[id(v)])
@@ -1785,8 +1778,8 @@ public defn compile (b:Body, rt:JitRuntime) :
       set-nx-off(c, v, offset(c, tmp, base-offset, vartab(b)))
     set-cost-off(c, offset(c, cost-var, base-offset, vartab(b)))
     println("COST-VAR %_ OFF %_" % [cost-var, cost-off(c)])
-    set-gain-off(c, offset(c, gain-var, base-offset, vartab(b)))
-    println("GAIN-VAR %_ OFF %_" % [gain-var, gain-off(c)])
+    ; set-gain-off(c, offset(c, gain-var, base-offset, vartab(b)))
+    ; println("GAIN-VAR %_ OFF %_" % [gain-var, gain-off(c)])
 
     ; println("LEN VARS %_ LEN TAB %_" % [length(vars(b)), length(vartab(b))])
     if length(vartab(b)) != length(vars(b)) :
@@ -2118,14 +2111,14 @@ public defn PolyLinePath (name:Symbol, poly:PolyLine3f, speed:Float) -> Vertex :
          FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)))),
          FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t)))))
 
-public defn ParticleInterpolator (radius:Float) -> (Int, Float) -> V3f :
+public defn ParticleInterpolator (radius:Float, speed:Float) -> (Int, Float) -> V3f :
   defn rnd-vec (a:Float) : rnd(dims-to-box $ xyz(a))
   var acceleration:V3f = rnd-vec(1.0f)
   var axis:V3f = x3f(1.0f)
   var velocity:V3f = 10.0f * normalize(rnd-vec(1.0f))
-  var position:V3f = V3f(0.0f, radius, 0.0f)
+  var position:V3f = V3f(0.0f, radius, 0.0f) + rnd-vec(1.0f)
   var last-tick:Int = -1
-  var last-position:V3f = V3f(0.0f, 0.0f, 0.0f)
+  var last-position:V3f = V3f(0.0f, 0.0f, 0.0f) 
   ; println("VELOCITY %_" % [velocity])
   defn apply-force (f:V3f) :
     acceleration = acceleration + f
@@ -2140,7 +2133,7 @@ public defn ParticleInterpolator (radius:Float) -> (Int, Float) -> V3f :
       ; velocity = 0.9f * velocity + 0.1f * (velocity + acceleration)
       ; velocity = 0.9f * velocity + 0.1f * (velocity + acceleration)
       axis = normalize(axis + rnd-vec(0.1f))
-      velocity = normalize(position) % axis
+      velocity = speed * normalize(position) % axis
       position = position + velocity
       ; print("POS %_" % [position])
       position = radius * normalize(position)
@@ -2154,13 +2147,13 @@ public defn ParticleInterpolator (radius:Float) -> (Int, Float) -> V3f :
 public defn PointInterpolator (pt:V3f) -> (Int, Float) -> V3f :
   fn (tick, it) : pt
 
-public defn Particle (name:Symbol, radius:Float, off-y:Float) -> Vertex :
-  val pt-of = ParticleInterpolator(radius)
+public defn Particle (name:Symbol, radius:Float, center:V3f, speed:Float) -> Vertex :
+  val pt-of = ParticleInterpolator(radius, speed)
   defn nm (i:Symbol) : add-suffix(name, i)
   Vertex(name, true,
-         FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t)))),
-         FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t))) + off-y),
-         FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t)))))
+         FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t)) + x(center))),
+         FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)) + y(center))),
+         FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t)) + z(center))))
 
 public defn BindBody<?T> (name:Symbol, mod:?T&Module, constraints:Seqable<MixCost>, new-vars:Tuple<AnyVar>, etc-entities:Seqable<Entity>) :
   BindBody(name,
@@ -2347,3 +2340,5 @@ public defn ProjectOntoCircle (v:Vertex, circle:Circle) -> Exp :
   EdgeLengthConstraint(EdgeExp(exp(center(circle)), exp(v)), exp(radius(circle)))
 
   
+public defn ProjectOntoSphere (v:Vec3Exp, c:Vec3Exp, r:Exp) -> Exp :
+  EdgeLengthConstraint(EdgeExp(c, v), r)

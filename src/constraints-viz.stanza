@@ -253,8 +253,12 @@ defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
     val b = body(s)
     set-t(s, t(s) + delta)
     while t(s) > end-t(s) :
-      set-end-t(s, end-t(s) + next(schedule(s)))
+      val phrase = next(schedule(s))
+      set-start-t(s, end-t(s))
+      set-end-t(s, end-t(s) + end-t(phrase))
+      set-hook(s, hook(phrase))
       println("TIME %_ %_" % [t(s), end-t(s)])
+    hook(s)(t(s) - start-t(s))
     set-tick(s, tick(s) + 1)
     set-x(time(v), t(s))
     next(b, tick(s), t(s))
@@ -281,7 +285,7 @@ defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
     if top-show-cost? :
       for c in costs(b) do :
         val dat = data(machine(c))
-        println("COST %_ (%_)" % [dat[cost-off(c)], timer])
+        println("COST %_ %_ (%_)" % [name(c), dat[cost-off(c)], timer])
     glyph-stroking? = true
     set-step?(v, false)
 
@@ -337,6 +341,9 @@ public var top-kind-0 = "tet"
 install(screen-props, StringProp("kind-0", { top-kind-0 }, { top-kind-0 = _ }))
 
 install(screen-props, FloatProp("delta", { DELTA }, { DELTA = _ }))
+install(screen-props, FloatProp("update-std-dev", { UPDATE-STD-DEV }, { UPDATE-STD-DEV = _ }))
+public var top-collision-detection? = false
+install(screen-props, BoolProp("is-collision-detection", { top-collision-detection? }, { top-collision-detection? = _ }))
 
 install(screen-props, IntProp("num-registers", { NUM-REGISTERS }, { NUM-REGISTERS = _ }))
 install(screen-props, BoolProp("is-old", { OLD? }, { OLD? = _ }))

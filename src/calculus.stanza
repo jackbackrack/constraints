@@ -166,7 +166,8 @@ public defn differentiate (e:Exp, x:Symbol) -> Exp :
        num / den
      (e:Power) :
        match(b(e)) :
-         (b:Const) : b * pow(a(e), b - Const(1.0f)) * ddx(a(e))
+         (b:Const) :
+           b * pow(a(e), b - Const(1.0f)) * ddx(a(e))
          (b:Exp) :
            if const?(a(e), E-F) :
              e * ddx(b)
