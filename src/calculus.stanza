@@ -12,6 +12,7 @@ public defmulti vars (e:Exp) -> Tuple<Symbol>
 public defstruct Const <: Exp : (value:Float, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Variable <: Exp : (name:Symbol, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Temporary <: Exp : (namespace : Int, off : Int, vars:Tuple<Symbol> with: (as-method => true, default => []))
+public defstruct Print <: Exp : (id:Int, a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Define <: Exp : (name:Symbol, a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Add <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Subtract <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
@@ -23,7 +24,6 @@ public defstruct Sin <: Exp : (a:Exp, vars:Tuple<Symbol> with: (as-method => tru
 public defstruct Cos <: Exp : (a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Acos <: Exp : (a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
 public defstruct Atan2 <: Exp : (a:Exp, b:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
-public defstruct Print <: Exp : (id:Int, a:Exp, vars:Tuple<Symbol> with: (as-method => true, default => []))
 
 public var num-equals:Int = 0
 

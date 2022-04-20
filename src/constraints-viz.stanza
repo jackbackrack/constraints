@@ -99,6 +99,18 @@ defmethod draw (c:Circle, size:Float) :
   draw-circle(x(radius(c)), 64)
   gl-pop-matrix()
 
+defmethod draw (c:PolyLinePath, size:Float) :
+  draw(point(c), size)
+
+defmethod draw (c:OrbitParticle, size:Float) :
+  draw(point(c), size)
+  draw(circle(c), size)
+
+defmethod draw (c:Orbit2Particle, size:Float) :
+  draw(point(c), size)
+  draw(circle1(c), size)
+  draw(circle2(c), size)
+
 defmethod draw (p:Plane, size:Float) :
   color-of(true)
   gl-push-matrix()
@@ -340,8 +352,12 @@ install(screen-props, FloatProp("x-2", { top-x-2 }, { top-x-2 = _ }))
 public var top-kind-0 = "tet"
 install(screen-props, StringProp("kind-0", { top-kind-0 }, { top-kind-0 = _ }))
 
+install(screen-props, BoolProp("is-base", { BASE? }, { BASE? = _ }))
+
 install(screen-props, FloatProp("delta", { DELTA }, { DELTA = _ }))
 install(screen-props, FloatProp("update-std-dev", { UPDATE-STD-DEV }, { UPDATE-STD-DEV = _ }))
+install(screen-props, FloatProp("smoothness", { SMOOTHNESS }, { SMOOTHNESS = _ }))
+install(screen-props, FloatProp("speed-limit", { SPEED-LIMIT }, { SPEED-LIMIT = _ }))
 public var top-collision-detection? = false
 install(screen-props, BoolProp("is-collision-detection", { top-collision-detection? }, { top-collision-detection? = _ }))
 
