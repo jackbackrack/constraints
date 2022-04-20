@@ -1,3 +1,4 @@
+; include ".poet/stanza.proj"
 include "src/stanza.proj"
 
 build pixel-picker :
@@ -36,7 +37,7 @@ build constraints-stanza :
   supported-vm-packages:
     constraints
     constraints-viz
-    constraints-app
+    constraints-kinematics-app
   pkg: "pkgs"
   o: "build/constraints-stanza"
   optimize

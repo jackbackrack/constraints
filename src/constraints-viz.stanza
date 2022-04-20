@@ -24,6 +24,7 @@ defpackage constraints-viz :
   import gfx/drawing
   import gfx/font
   import constraints
+  import constraints-paths
   import stz/asmjit
 
 public deftype ConstraintsModel <: Model

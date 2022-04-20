@@ -1,0 +1,354 @@
+defpackage constraints-paths :
+  import core
+  import math
+  import collections
+  import utils/rnd
+  import utils/seqable
+  import utils/math
+  import geom/vec
+  import geom/mat
+  import geom/angle
+  import geom/poseable
+  import geom/polygon
+  import geom/box
+  import geom/shape
+  import geom/bounded
+  import geom/line-segment
+  import geom/polyline
+  import geom/line-loop
+  import geom/polyhedron
+  import geom/polyhedra
+  import constraints
+
+; defn PolyLinePath (name:Symbol, poly:PolyLine3f) -> Vertex :
+;   val stroke = strokes(poly)[0]
+;   defn index (i:Int) : i % length(stroke)
+;   defn elt (i:Int, dim:Int) : (stroke[index(i)])[dim]
+;   defn nm (i:Symbol) : add-suffix(name, i)
+;   Vertex(name, true,
+;          SymVar(nm(`x), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 0))),
+;          SymVar(nm(`y), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 1))),
+;          SymVar(nm(`z), 0.0f, true, fn (v, i, t) : set-x(v, elt(i, 2))))
+
+defn interval-bsearch (elts:Tuple<Float>, x:Float) -> Int :
+  let loop (l:Int = 0, r:Int = length(elts) - 1) :
+    if r >= l :
+      val mid = l + (r - l) / 2
+      if elts[mid] == x :
+        mid
+      else if elts[mid] < x :
+        loop(mid + 1, r)
+      else :
+        loop(l, mid - 1)
+    else :
+      max(0, l - 1)
+
+public deftype Path <: Entity
+public defmulti point (p:Path) -> Vertex
+
+public defstruct PolyLinePath <: Path :
+  id : Symbol with: (as-method => true, updater => sub-id)
+  poly : PolyLine3f with: (setter => set-poly)
+  duration : SymVar
+  point : Vertex with: (as-method => true)
+
+defmethod vars (e:PolyLinePath) -> Seqable<AnyVar> :
+  cat-all $ [[duration(e)], vars(point(e))]
+
+public defn set-params (p:PolyLinePath, new-duration:Float) -> PolyLinePath :
+  set-x(duration(p), new-duration)
+  p
+
+public defn interpolator-of (p:PolyLinePath) -> (Int, Float) -> V3f :
+  PolyLinePathInterpolator(poly(p), duration(p))  
+
+; TODO: ONLY ONE STROKE FOR NOW
+; TODO: REDO POLYLINE3f to have LineString3f as elements
+public defn PolyLinePathInterpolator (poly:PolyLine3f, duration:SymVar) -> (Int, Float) -> V3f :
+  val stroke = strokes(poly)[0]
+  val segs:Tuple<[V3f,V3f]> = to-tuple $ successive-pairs(stroke)
+  val sums = to-tuple $ cat([0.0f], cumsum $ seq(fn (seg) : distance(seg[0], seg[1]), segs))
+  val tot-len = last(sums)
+  var last-tick:Int = -1
+  var last-pt:V3f = V3f(0.0f, 0.0f, 0.0f)
+  defn pt-of (tick:Int, it:Float) -> V3f :
+    val speed = tot-len / x(duration)
+    val t = speed * it
+    if tick == last-tick :
+      last-pt
+    else :
+      val dist  = t % tot-len
+      val idx   = interval-bsearch(sums, dist)
+      val seg   = segs[idx]
+      val start = seg[0]
+      val end   = seg[1]
+      val off   = dist - sums[idx]
+      val dir   = normalize(end - start) 
+      val pt    = start + off * dir
+      ; println("TICK %_: T %_ TOT-LEN %_ DIST %_ IDX %_ START %_ END %_ OFF %_ DIR %_ PT %_" %
+      ;   [ tick, t, tot-len, dist, idx, start, end, off, dir, pt])
+      last-tick = tick
+      last-pt   = pt
+      pt
+  pt-of
+
+public defn PolyLinePath (name:Symbol, poly:PolyLine3f, duration:SymVar) -> PolyLinePath :
+  val pt-of = PolyLinePathInterpolator(poly, duration)
+  defn nm (i:Symbol) : add-suffix(name, i)
+  PolyLinePath(name, poly, duration,
+    Vertex(name, true,
+           FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t))))
+           FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)))),
+           FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t))))))
+
+public defn PolyLinePath (name:Symbol, poly:PolyLine3f, duration:Float) -> PolyLinePath :
+  val path-duration = SymVar(add-suffix(name, `duration), duration, false, false)
+  PolyLinePath(name, poly, path-duration)
+
+defn rnd-vec (a:Float) : rnd(dims-to-box $ xyz(a))
+
+public defn Orbit2ParticleInterpolator (circle1:Circle, speed1:SymVar, circle2:Circle, speed2:SymVar) -> (Int, Float) -> V3f :
+  var axis1:V3f = x3f(1.0f)
+  var velocity1:V3f = 10.0f * normalize(rnd-vec(1.0f))
+  ; var position1:V3f = V3f(0.0f, radius1, 0.0f) + rnd-vec(1.0f)
+  var position1:V3f = x(radius(circle1)) * normalize(rnd-vec(1.0f))
+  var axis2:V3f = x3f(1.0f)
+  var velocity2:V3f = 10.0f * normalize(rnd-vec(1.0f))
+  ; var position2:V3f = V3f(0.0f, radius2, 0.0f) + rnd-vec(1.0f)
+  var position2:V3f = x(radius(circle2)) * normalize(rnd-vec(1.0f))
+  var last-tick:Int = -1
+  var last-position:V3f = V3f(0.0f, 0.0f, 0.0f) 
+  defn pt-of (tick:Int, it:Float) -> V3f :
+    if tick == last-tick :
+      last-position
+    else :
+      axis1 = normalize(axis1 + rnd-vec(0.1f))
+      velocity1 = x(speed1) * normalize(position1) % axis1
+      position1 = position1 + velocity1
+      position1 = x(radius(circle1)) * normalize(position1)
+
+      axis2 = normalize(axis2 + rnd-vec(0.1f))
+      velocity2 = x(speed2) * normalize(position2) % axis2
+      position2 = position2 + velocity2
+      position2 = x(radius(circle2)) * normalize(position2)
+
+      set-pos(center(circle2), position2)
+
+      val position = pos(center(circle1)) + position1 + position2
+
+      last-position = position
+      last-tick = tick
+      position
+
+  pt-of
+
+public defstruct Orbit2Particle <: Path :
+  id : Symbol with: (as-method => true, updater => sub-id)
+  circle1 : Circle
+  speed1 : SymVar
+  circle2 : Circle
+  speed2 : SymVar
+  point : Vertex with: (as-method => true)
+
+defmethod vars (e:Orbit2Particle) -> Seqable<AnyVar> :
+  cat-all $ [[speed1(e), speed2(e)], vars(point(e)), vars(circle1(e)), vars(circle2(e))]
+
+public defn set-params (p:Orbit2Particle, new-center1:V3f, new-radius1:Float, new-speed1:Float,
+                                         new-center2:V3f, new-radius2:Float, new-speed2:Float) -> Orbit2Particle :
+  set-pos(center(circle1(p)), new-center1)
+  set-x(radius(circle1(p)), new-radius1)
+  set-x(speed1(p), new-speed1)
+  set-pos(center(circle2(p)), new-center2)
+  set-x(radius(circle2(p)), new-radius2)
+  set-x(speed2(p), new-speed2)
+  p
+
+public defn interpolator-of (p:Orbit2Particle) -> (Int, Float) -> V3f :
+  Orbit2ParticleInterpolator(circle1(p), speed1(p), circle2(p), speed2(p))  
+
+public defn Orbit2Particle (name:Symbol, center1:V3f, radius1:Float, radius2:Float, speed1:Float, speed2:Float) -> Orbit2Particle :
+  defn nm (i:Symbol) : add-suffix(name, i)
+  val orbit-circle1 = Circle(add-suffix(name, `circle1), Vertex(add-suffix(name, `center), center1),
+                             SymVar(add-suffix(name, `radius), radius1, false, false), true, false)
+  val orbit-speed1 = SymVar(add-suffix(name, `speed1), speed1, false, false)
+  val orbit-circle2 = Circle(add-suffix(name, `circle2), Vertex(add-suffix(name, `center), xyz(0.0f)),
+                             SymVar(add-suffix(name, `radius), radius2, false, false), true, false)
+  val orbit-speed2 = SymVar(add-suffix(name, `speed1), speed2, false, false)
+  val pt-of = Orbit2ParticleInterpolator(orbit-circle1, orbit-speed1, orbit-circle2, orbit-speed2)
+  Orbit2Particle(name, orbit-circle1, orbit-speed1, orbit-circle2, orbit-speed2,
+    Vertex(name, true,
+           FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t)))),
+           FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)))),
+           FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t))))))
+
+;;; ORBIT PARTICLE
+
+public defn OrbitParticleInterpolator (circle:Circle, speed:SymVar) -> (Int, Float) -> V3f :
+  var axis1:V3f = x3f(1.0f)
+  var velocity1:V3f = 10.0f * normalize(rnd-vec(1.0f))
+  var position1:V3f = x(radius(circle)) * normalize(y3f(1.0f) + rnd-vec(0.1f))
+  var last-tick:Int = -1
+  var last-position:V3f = V3f(0.0f, 0.0f, 0.0f) 
+  defn pt-of (tick:Int, it:Float) -> V3f :
+    if tick == last-tick :
+      last-position
+    else :
+      axis1 = normalize(axis1 + rnd-vec(0.1f))
+      velocity1 = x(speed) * normalize(position1) % axis1
+      position1 = position1 + velocity1
+      position1 = x(radius(circle)) * normalize(position1)
+
+      val position = pos(center(circle)) + position1
+
+      last-position = position
+      last-tick = tick
+      position
+
+  pt-of
+
+; public defn OrbitParticleInterpolator (radius:Float, speed:Float) -> (Int, Float) -> V3f :
+;   defn rnd-vec (a:Float) : rnd(dims-to-box $ xyz(a))
+;   var acceleration:V3f = rnd-vec(1.0f)
+;   var axis:V3f = x3f(1.0f)
+;   var velocity:V3f = 10.0f * normalize(rnd-vec(1.0f))
+;   var position:V3f = V3f(0.0f, radius, 0.0f) + rnd-vec(1.0f)
+;   var last-tick:Int = -1
+;   var last-position:V3f = V3f(0.0f, 0.0f, 0.0f) 
+;   ; println("VELOCITY %_" % [velocity])
+;   defn apply-force (f:V3f) :
+;     acceleration = acceleration + f
+;   defn pt-of (tick:Int, it:Float) -> V3f :
+;     ; val t = speed * it
+;     if tick == last-tick :
+;       last-position
+;     else :
+;       ; val force = 10.0f * normalize(normalize(rnd-vec(1.0f)) % position)
+;       ; apply-force(rnd-vec(0.5f))
+;       ; apply-force(force)
+;       ; velocity = 0.9f * velocity + 0.1f * (velocity + acceleration)
+;       ; velocity = 0.9f * velocity + 0.1f * (velocity + acceleration)
+;       axis = normalize(axis + rnd-vec(0.1f))
+;       velocity = speed * normalize(position) % axis
+;       position = position + velocity
+;       ; print("POS %_" % [position])
+;       position = radius * normalize(position)
+;       ; println(" NORM POS %_" % [ position])
+;       last-tick = tick
+;       last-position = position
+;       ; acceleration = V3f(0.0f, 0.0f, 0.0f)
+;       position
+;   pt-of
+
+public defstruct OrbitParticle <: Path :
+  id : Symbol with: (as-method => true, updater => sub-id)
+  circle : Circle
+  speed : SymVar
+  point : Vertex with: (as-method => true)
+
+defmethod vars (e:OrbitParticle) -> Seqable<AnyVar> :
+  cat-all $ [[speed(e)], vars(point(e)), vars(circle(e))]
+
+public defn set-params (p:OrbitParticle, new-center:V3f, new-radius:Float, new-speed:Float) -> OrbitParticle :
+  set-pos(center(circle(p)), new-center)
+  set-x(radius(circle(p)), new-radius)
+  set-x(speed(p), new-speed)
+  p
+
+public defn interpolator-of (p:OrbitParticle) -> (Int, Float) -> V3f :
+  OrbitParticleInterpolator(circle(p), speed(p))  
+
+public defn OrbitParticle (name:Symbol, circle:Circle, speed:SymVar) -> OrbitParticle :
+  val pt-of = OrbitParticleInterpolator(circle, speed)
+  defn nm (i:Symbol) : add-suffix(name, i)
+  OrbitParticle(name, circle, speed, 
+    Vertex(name, true,
+           FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t)))),
+           FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)))),
+           FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t))))))
+
+public defn OrbitParticle (name:Symbol, center:V3f, radius:Float, speed:Float) -> OrbitParticle :
+  val orbit-circle = Circle(add-suffix(name, `circle), Vertex(add-suffix(name, `center), center),
+                            SymVar(add-suffix(name, `radius), radius, false, false), true, false)
+  val orbit-speed = SymVar(add-suffix(name, `speed), speed, false, false)
+  OrbitParticle(name, orbit-circle, orbit-speed)
+
+public defn PointInterpolator (pt:V3f) -> (Int, Float) -> V3f :
+  fn (tick, it) : pt
+
+#for (Prim in [Float Float]
+      Vec in [V2f V3f]
+      Stroke in [Stroke2f Stroke3f]
+      LineSegment in [LineSegment2f LineSegment3f]
+      Box in [Box2f Box3f]
+      neg-inf-box in [neg-inf-box2f neg-inf-box3f]
+      StrokeName in ["Stroke2f" "Stroke3f"]) :
+
+  public defstruct Stroke <: AnyShape&Equalable :
+    state: AnyShapeState with: (as-method => true)
+    points: Tuple<Vec>
+
+  public defn Stroke (points:Seqable<Vec>) :
+    Stroke(default-anyshape-state(), to-tuple $ points)
+
+  defmethod equal? (a:Stroke, b:Stroke) -> True|False :
+    points(a) == points(b)
+
+  defmethod xyz (mat:Mat44f, s:Stroke) -> Stroke :
+    Stroke(state(s), for v in points(s) map : mat * v)
+
+  defmethod print (o:OutputStream, c:Stroke) :
+    print(o, "%_(%_)" % [StrokeName points(c)])
+
+  public defn cat (s1:Stroke, s2:Stroke) -> Stroke :
+    Stroke(cat(points(s1), points(s2)))
+
+  defmethod bounds (p:Stroke) -> Box3f :
+    xyz(reduce(union, neg-inf-box(), seq(Box, points(p))))
+
+  public defn segments (s:Stroke) -> Seq<LineSegment> :
+    val pts = points(s)
+    for i in 0 to (length(pts) - 1) seq :
+      LineSegment(pts[i], pts[i + 1])
+
+public defn to-stroke3f (s:Stroke2f) -> Stroke3f :
+  Stroke3f(state(s), for v in points(s) map: xyz(v))
+
+public defn to-polyline3f (s:Stroke3f) -> PolyLine3f :
+  PolyLine3f(state(s), [points(s)])
+
+public defstruct Arc :
+  center : V2f
+  radius : Float
+  angle : Float       ; degrees
+  start-angle : Float ; degrees
+
+public defn sample (arc:Arc, delta:Float) -> Stroke2f :
+  val r = radius(arc)
+  val n = round(angle(arc) / delta)
+  val inc = angle(arc) / n
+  Stroke2f $ for i in 0 to (to-int(n) + 1) seq :
+    val a = degrees-to-radians(start-angle(arc) + to-float(i) * inc)
+    center(arc) + V2f(r * cos(a), r * sin(a))
+
+public defn double-you (radius:Float) -> Stroke2f :
+  val you1 = sample(Arc(xy(0.0f), radius, 180.0f, 0.0f), 15.0f)
+  cat(you1, reflect-x $ you1)
+
+public defn repeat-first-point (pts:Tuple<V3f>) -> Tuple<V3f> :
+  to-tuple $ cat(pts, [pts[0]])
+
+public val square-path = PolyLine3f $ [ repeat-first-point $ [
+  V3f(1.0f, 1.0f, 0.0f),   V3f(-1.0f, 1.0f, 0.0f), V3f(-1.0f, -1.0f, 0.0f), V3f(1.0f, -1.0f, 0.0f)]]
+
+public val cube-path = PolyLine3f $ [ repeat-first-point $ [
+  V3f(1.0f, 1.0f, -1.0f), V3f(-1.0f, 1.0f, 1.0f), V3f(-1.0f, -1.0f, -1.0f), V3f(1.0f, -1.0f, 1.0f)]]
+
+public val square-you = PolyLine3f $ [ repeat-first-point $ [
+    V3f(-1.0f, 1.0f, 0.0f), V3f(-1.0f, -1.0f, 0.0f), V3f(1.0f, -1.0f, 0.0f), V3f(1.0f, 1.0f, 0.0f)
+    V3f(1.0f, -1.0f, 0.0f), V3f(-1.0f, -1.0f, 0.0f) ]]
+
+public val round-you = to-polyline3f $ to-stroke3f $ reflect-y $ double-you(1.0f)
+public val circle-line = to-polyline3f $ to-stroke3f $ sample(Arc(xy(0.0f), 1.0f, 360.0f, 0.0f), 15.0f)
+
+public defn PolyLinePath2 (name:Symbol) -> Vertex :
+  Vertex(name, true, SymVar(`x, 0.0f) SymVar(`y, 0.0f) SymVar(`z, 0.0f))

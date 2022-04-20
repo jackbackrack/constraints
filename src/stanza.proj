@@ -1,4 +1,5 @@
 package constraints defined-in "constraints.stanza"
+package constraints-paths defined-in "constraints-paths.stanza"
 package constraints-viz defined-in "constraints-viz.stanza"
 package constraints-app defined-in "constraints-app.stanza"
 package constraints-simple-app defined-in "constraints-simple-app.stanza"

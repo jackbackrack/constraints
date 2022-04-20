@@ -28,6 +28,7 @@ defpackage constraints-kinematics-app :
   import gfx/drawing
   import calculus
   import constraints
+  import constraints-paths
   import constraints-viz
 
 defstruct LinkSpec :
