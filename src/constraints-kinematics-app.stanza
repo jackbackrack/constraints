@@ -937,7 +937,7 @@ defn one-path-sched (b:Body, right-joints:Tuple<Symbol>, orbit-particle:OrbitPar
     ; set-costs(b, [ `main/base `main/basing, `main/straighten ])
     ; yield(Phrase(2.0f))
     
-    set-next(left-path, interpolator-of(set-params(orbit-particle, xyz(0.0f), x-0, 1.0f)))
+    set-next(left-path, interpolator-of(set-params(orbit-particle, xyz(0.0f), x-0, 3.0f)))
     set-next(right-path, PointInterpolator(V3f(4.0f, 8.0f, 0.0f)))
     set-costs(b, [ `main/base `main/basing, `main/limit `main/repel `main/above `main/left-path `main/right-path ])
     yield(fade-in(4.0f, set-gain{left-path-cost, _}))
@@ -954,7 +954,7 @@ defn one-path-sched (b:Body, right-joints:Tuple<Symbol>, orbit-particle:OrbitPar
     set-costs(b, [ `main/base `main/basing `main/straighten ])
     yield(Phrase(2.0f))
 
-    set-next(left-path, interpolator-of(set-params(orbit-particle, xyz(0.0f), x-0, 1.0f)))
+    set-next(left-path, interpolator-of(set-params(orbit-particle, xyz(0.0f), x-0, 3.0f)))
     set-costs(b, [ `main/base `main/basing `main/limit `main/repel `main/above `main/centering `main/left-path ])
     yield(fade-in(4.0f, set-gain{left-path-cost, _}))
     yield(Phrase(4.0f))
@@ -1003,15 +1003,15 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float, x-2
         val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
         TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
       "time-dancer-two-rnds" :
-        val left-path = OrbitParticle(`left-particle, V3f(-8.0f, x-1, 5.0f), x-0, 0.5f)
-        val right-path = OrbitParticle(`right-particle, V3f(8.0f, x-1, 5.0f), x-0, 1.0f)
+        val left-path = OrbitParticle(`left-particle, V3f(-8.0f, x-1, 5.0f), x-0, 2.0f)
+        val right-path = OrbitParticle(`right-particle, V3f(8.0f, x-1, 5.0f), x-0, 4.0f)
         TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
       "time-dancer-two-orbit2s" :
-        val left-path = Orbit2Particle(`left-particle, y3f(x-1), x-0, x-1, 0.25f, 1.0f)
-        val right-path = Orbit2Particle(`right-particle, y3f(x-1), x-0, x-1, 0.25f, 1.0f)
+        val left-path = Orbit2Particle(`left-particle, y3f(x-1), x-0, x-1, 0.25f, 3.0f)
+        val right-path = Orbit2Particle(`right-particle, y3f(x-1), x-0, x-1, 0.25f, 3.0f)
         TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
       "time-dancer-rnd" :
-        val path = OrbitParticle(`particle, y3f(x-1), x-0, 1.0f)
+        val path = OrbitParticle(`particle, y3f(x-1), x-0, 3.0f)
         val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
         val right-joints = [`right-j4, `right-j3, `right-j2, `right-j1]
         val bottom-joints = [`bottom-j4 `bottom-j3 `bottom-j2 `bottom-j1]
@@ -1019,14 +1019,14 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float, x-2
         TimeExpKinematicsPathCenter(`main, x-0, time, robot-simple-body-exp-spec5,
           `origin, bottom-joints, left-joints, right-joints, path, `left-j4, `right-j4)
       "time-dancer-rnd-orbit2" :
-        val path = Orbit2Particle(`particle, y3f(x-1), x-0, x-1, 0.25f, 1.0f)
+        val path = Orbit2Particle(`particle, y3f(x-1), x-0, x-1, 4.0f, 1.0f)
         val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
         val right-joints = [`right-j4, `right-j3, `right-j2, `right-j1]
         val bottom-joints = [`bottom-j4 `bottom-j3 `bottom-j2 `bottom-j1]
         TimeExpKinematicsPathCenter(`main, x-0, time, robot-simple-body-exp-spec5,
           `origin, bottom-joints, left-joints, right-joints, path, `left-j4, `right-j4)
       "time-dancer-one-path" :
-        val left-path = OrbitParticle(`left-path, y3f(x-1), x-0, 1.0f)
+        val left-path = OrbitParticle(`left-path, y3f(x-1), x-0, 3.0f)
         val path-speed = SymVar(`path-speed, 1.0f, false, false)
         val right-path = PolyLinePath(`right-path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 1.0f)
         val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
@@ -1036,10 +1036,10 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float, x-2
         TimeExpKinematicsPathCenterStraighten(`main, x-0, time, robot-simple-body-exp-spec5,
            bottom-joints, left-joints, right-joints, left-path, `left-j4, right-path, `right-j4)
       "time-dancer-rnd-base" :
-        val path = OrbitParticle(`particle, y3f(x-1), x-0, 1.0f)
+        val path = OrbitParticle(`particle, y3f(x-1), x-0, 3.0f)
         TimeExpKinematicsPathCenterBase(`main, x-0, x-2, time, robot-simple-body-exp-spec5, path, `left-j4, `right-j4)
       "time-dancer-rnd-sphere" :
-        val path = OrbitParticle(`particle, y3f(x-1), 5.0f,  0.25f)
+        val path = OrbitParticle(`particle, y3f(x-1), 5.0f,  1.0f)
         TimeExpKinematicsPathSphere(`main, x-0, time, robot-simple-body-exp-spec5, path, `left-j2, `left-j4, `right-j4)
       ; "time-dancer-curl" :
       ;   TimeExpKinematicsCurl(`main, x-0, time, robot-simple-body-exp-spec5)
