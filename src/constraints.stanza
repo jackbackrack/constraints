@@ -103,12 +103,12 @@ public defn falling? (name:Symbol, e:Exp) -> [Exp, ExpVar] :
 public defstruct FunVar <: AnyVar :
   id : Symbol with: (as-method => true, updater => sub-id)
   x : Float with: (as-method => true, setter => set-x, default => 0.0f)     ; current value
-  next : (FunVar, Int, Float) -> False with: (default => fn (a, b, c) : false, setter => set-next) ; used for setting inputs
+  next : (FunVar) -> False with: (default => fn (a) : false, setter => set-next) ; used for setting inputs
 with:
   printer => true
   constructor => #FunVar
 
-public defn FunVar (id:Symbol, x:Float, next:(FunVar, Int, Float) -> False) -> FunVar :
+public defn FunVar (id:Symbol, x:Float, next:(FunVar) -> False) -> FunVar :
   #FunVar(full-name(id), x, next)
 
 defmethod exp (v:FunVar) -> Exp :
@@ -425,9 +425,9 @@ public defstruct Vertex <: Entity :
 with:
   printer => true
 
-public defn set-next (v:Vertex, pt-of:(Int, Float) -> V3f) :
+public defn set-next (v:Vertex, pt-of:() -> V3f) :
   defn set-funvar-next (fv:AnyVar, idx:Int) :
-    match(fv:FunVar) : set-next(fv, fn (v, i, t) : set-x(v, pt-of(i, t)[idx]))
+    match(fv:FunVar) : set-next(fv, fn (v) : set-x(v, pt-of()[idx]))
   set-funvar-next(x(v), 0)
   set-funvar-next(y(v), 1)
   set-funvar-next(z(v), 2)
@@ -903,9 +903,9 @@ public defn update (b:Body) :
   for v in symvars(b) do :
     update(v)
 
-public defn next (b:Body, tick:Int, time:Float) :
+public defn next (b:Body) :
   for v in funvars(b) do :
-    next(v)(v, tick, time)
+    next(v)(v)
     ; println("next %_ -> %_" % [id(v), x(v)])
 
 public defn clear (b:Body) :

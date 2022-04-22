@@ -38,46 +38,59 @@ public defmulti point (p:Path) -> Vertex
 
 public defstruct PolyLinePath <: Path :
   id : Symbol with: (as-method => true, updater => sub-id)
+  time : AnyVar
   poly : PolyLine3f with: (setter => set-poly)
-  duration : SymVar
+  duration : AnyVar
+  phase : AnyVar
   point : Vertex with: (as-method => true)
 
 defmethod vars (e:PolyLinePath) -> Seqable<AnyVar> :
-  cat-all $ [[duration(e)], vars(point(e))]
+  cat-all $ [[duration(e), phase(e)], vars(point(e))]
 
-public defn set-params (p:PolyLinePath, new-duration:Float) -> PolyLinePath :
+public defn set-params (p:PolyLinePath, new-duration:Float, new-phase:Float) -> PolyLinePath :
   set-x(duration(p), new-duration)
+  set-x(phase(p), new-phase)
   p
 
-public defn interpolator-of (p:PolyLinePath) -> (Int, Float) -> V3f :
-  PolyLinePathInterpolator(poly(p), duration(p))  
+public defn interpolator-of (p:PolyLinePath) -> (() -> V3f) :
+  PolyLinePathInterpolator(time(p), poly(p), duration(p), phase(p))
 
-defn streamer (f:Float -> V3f) -> (Int, Float) -> V3f :
-  var last-tick:Int = -1
+defn time-streamer (time:AnyVar, f:() -> V3f) -> () -> V3f :
   var last-time:Float = 0.0f
-  var last-pt:V3f = V3f(0.0f, 0.0f, 0.0f)
-  defn pt-of (tick:Int, time:Float) -> V3f :
-    if tick == last-tick :
+  var last-pt:V3f = xyz(0.0f)
+  defn pt-of () -> V3f :
+    if x(time) == last-time :
       last-pt
     else :
-      val delta = time - last-time
-      val pt    = f(delta)
-      last-tick = tick
+      val pt    = f()
       last-pt   = pt
-      last-time = time
+      last-time = x(time)
+      pt
+  pt-of
+
+defn delta-streamer (time:AnyVar, f:Float -> V3f) -> () -> V3f :
+  var last-time:Float = 0.0f
+  var last-pt:V3f = xyz(0.0f)
+  defn pt-of () -> V3f :
+    if x(time) == last-time :
+      last-pt
+    else :
+      val pt    = f(x(time) - last-time)
+      last-pt   = pt
+      last-time = x(time)
       pt
   pt-of
 
 ; TODO: ONLY ONE STROKE FOR NOW
 ; TODO: REDO POLYLINE3f to have LineString3f as elements
-public defn PolyLinePathInterpolator (poly:PolyLine3f, duration:SymVar) -> (Int, Float) -> V3f :
+public defn PolyLinePathInterpolator (time:AnyVar, poly:PolyLine3f, duration:AnyVar, phase:AnyVar) -> (() -> V3f) :
   val stroke = strokes(poly)[0]
   val segs:Tuple<[V3f,V3f]> = to-tuple $ successive-pairs(stroke)
   val sums = to-tuple $ cat([0.0f], cumsum $ seq(fn (seg) : distance(seg[0], seg[1]), segs))
 
-  defn f (delta:Float) :
+  defn f () :
     val tot-len = last(sums)
-    val d = tot-len * delta / x(duration)
+    val d     = x(time) * tot-len / x(duration) + x(phase)
     val dist  = d % tot-len
     val idx   = interval-bsearch(sums, dist)
     val seg   = segs[idx]
@@ -87,24 +100,28 @@ public defn PolyLinePathInterpolator (poly:PolyLine3f, duration:SymVar) -> (Int,
     val dir   = normalize(end - start) 
     start + off * dir
     
-  streamer(f)
+  time-streamer(time, f)
 
-public defn PolyLinePath (name:Symbol, poly:PolyLine3f, duration:SymVar) -> PolyLinePath :
-  val pt-of = PolyLinePathInterpolator(poly, duration)
+public defn PolyLinePath (name:Symbol, time:AnyVar, poly:PolyLine3f, duration:AnyVar, phase:AnyVar) -> PolyLinePath :
+  val pt-of = PolyLinePathInterpolator(time, poly, duration, phase)
   defn nm (i:Symbol) : add-suffix(name, i)
-  PolyLinePath(name, poly, duration,
+  PolyLinePath(name, time, poly, duration, phase,
     Vertex(name, true,
-           FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t))))
-           FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)))),
-           FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t))))))
+           FunVar(nm(`x), 0.0f, fn (v) : set-x(v, x(pt-of())))
+           FunVar(nm(`y), 0.0f, fn (v) : set-x(v, y(pt-of()))),
+           FunVar(nm(`z), 0.0f, fn (v) : set-x(v, z(pt-of())))))
 
-public defn PolyLinePath (name:Symbol, poly:PolyLine3f, duration:Float) -> PolyLinePath :
+public defn PolyLinePath (name:Symbol, time:SymVar, poly:PolyLine3f, duration:Float, phase:Float) -> PolyLinePath :
   val path-duration = SymVar(add-suffix(name, `duration), duration, false, false)
-  PolyLinePath(name, poly, path-duration)
+  val path-phase = SymVar(add-suffix(name, `phase), phase, false, false)
+  PolyLinePath(name, time, poly, path-duration, path-phase)
+
+public defn PolyLinePath (name:Symbol, time:SymVar, poly:PolyLine3f, duration:Float) -> PolyLinePath :
+  PolyLinePath(name, time, poly, duration, 0.0f)
 
 defn rnd-vec (a:Float) : rnd(dims-to-box $ xyz(a))
 
-public defn Orbit2ParticleInterpolator (circle1:Circle, duration1:SymVar, circle2:Circle, duration2:SymVar) -> (Int, Float) -> V3f :
+public defn Orbit2ParticleInterpolator (time:SymVar, circle1:Circle, duration1:SymVar, circle2:Circle, duration2:SymVar) -> () -> V3f :
   var axis1:V3f = x3f(1.0f)
   var position1:V3f = x(radius(circle1)) * normalize(rnd-vec(1.0f))
   var axis2:V3f = x3f(1.0f)
@@ -127,10 +144,11 @@ public defn Orbit2ParticleInterpolator (circle1:Circle, duration1:SymVar, circle
 
     pos(center(circle1)) + position1 + position2
 
-  streamer(f)
+  delta-streamer(time, f)
 
 public defstruct Orbit2Particle <: Path :
   id : Symbol with: (as-method => true, updater => sub-id)
+  time : SymVar
   circle1 : Circle
   duration1 : SymVar
   circle2 : Circle
@@ -150,10 +168,10 @@ public defn set-params (p:Orbit2Particle, new-center1:V3f, new-radius1:Float, ne
   set-x(duration2(p), new-duration2)
   p
 
-public defn interpolator-of (p:Orbit2Particle) -> (Int, Float) -> V3f :
-  Orbit2ParticleInterpolator(circle1(p), duration1(p), circle2(p), duration2(p))  
+public defn interpolator-of (p:Orbit2Particle) -> () -> V3f :
+  Orbit2ParticleInterpolator(time(p), circle1(p), duration1(p), circle2(p), duration2(p))
 
-public defn Orbit2Particle (name:Symbol, center1:V3f, radius1:Float, radius2:Float, duration1:Float, duration2:Float) -> Orbit2Particle :
+public defn Orbit2Particle (name:Symbol, time:SymVar, center1:V3f, radius1:Float, radius2:Float, duration1:Float, duration2:Float) -> Orbit2Particle :
   defn nm (i:Symbol) : add-suffix(name, i)
   val orbit-circle1 = Circle(add-suffix(name, `circle1), Vertex(add-suffix(name, `center), center1),
                              SymVar(add-suffix(name, `radius), radius1, false, false), true, false)
@@ -161,16 +179,16 @@ public defn Orbit2Particle (name:Symbol, center1:V3f, radius1:Float, radius2:Flo
   val orbit-circle2 = Circle(add-suffix(name, `circle2), Vertex(add-suffix(name, `center), xyz(0.0f)),
                              SymVar(add-suffix(name, `radius), radius2, false, false), true, false)
   val orbit-duration2 = SymVar(add-suffix(name, `duration1), duration2, false, false)
-  val pt-of = Orbit2ParticleInterpolator(orbit-circle1, orbit-duration1, orbit-circle2, orbit-duration2)
-  Orbit2Particle(name, orbit-circle1, orbit-duration1, orbit-circle2, orbit-duration2,
+  val pt-of = Orbit2ParticleInterpolator(time, orbit-circle1, orbit-duration1, orbit-circle2, orbit-duration2)
+  Orbit2Particle(name, time, orbit-circle1, orbit-duration1, orbit-circle2, orbit-duration2,
     Vertex(name, true,
-           FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t)))),
-           FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)))),
-           FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t))))))
+           FunVar(nm(`x), 0.0f, fn (v) : set-x(v, x(pt-of()))),
+           FunVar(nm(`y), 0.0f, fn (v) : set-x(v, y(pt-of()))),
+           FunVar(nm(`z), 0.0f, fn (v) : set-x(v, z(pt-of())))))
 
 ;;; ORBIT PARTICLE
 
-public defn OrbitParticleInterpolator (circle:Circle, duration:SymVar) -> (Int, Float) -> V3f :
+public defn OrbitParticleInterpolator (time:SymVar, circle:Circle, duration:SymVar) -> () -> V3f :
   var axis1:V3f = x3f(1.0f)
   var position1:V3f = x(radius(circle)) * normalize(y3f(1.0f) + rnd-vec(0.1f))
 
@@ -182,10 +200,11 @@ public defn OrbitParticleInterpolator (circle:Circle, duration:SymVar) -> (Int, 
     position1 = x(radius(circle)) * normalize(position1)
     pos(center(circle)) + position1
 
-  streamer(f)
+  delta-streamer(time, f)
 
 public defstruct OrbitParticle <: Path :
   id : Symbol with: (as-method => true, updater => sub-id)
+  time : SymVar
   circle : Circle
   duration : SymVar
   point : Vertex with: (as-method => true)
@@ -199,26 +218,26 @@ public defn set-params (p:OrbitParticle, new-center:V3f, new-radius:Float, new-d
   set-x(duration(p), new-duration)
   p
 
-public defn interpolator-of (p:OrbitParticle) -> (Int, Float) -> V3f :
-  OrbitParticleInterpolator(circle(p), duration(p))  
+public defn interpolator-of (p:OrbitParticle) -> (() -> V3f) :
+  OrbitParticleInterpolator(time(p), circle(p), duration(p))
 
-public defn OrbitParticle (name:Symbol, circle:Circle, duration:SymVar) -> OrbitParticle :
-  val pt-of = OrbitParticleInterpolator(circle, duration)
+public defn OrbitParticle (name:Symbol, time:SymVar, circle:Circle, duration:SymVar) -> OrbitParticle :
+  val pt-of = OrbitParticleInterpolator(time, circle, duration)
   defn nm (i:Symbol) : add-suffix(name, i)
-  OrbitParticle(name, circle, duration, 
+  OrbitParticle(name, time, circle, duration, 
     Vertex(name, true,
-           FunVar(nm(`x), 0.0f, fn (v, i, t) : set-x(v, x(pt-of(i, t)))),
-           FunVar(nm(`y), 0.0f, fn (v, i, t) : set-x(v, y(pt-of(i, t)))),
-           FunVar(nm(`z), 0.0f, fn (v, i, t) : set-x(v, z(pt-of(i, t))))))
+           FunVar(nm(`x), 0.0f, fn (v) : set-x(v, x(pt-of()))),
+           FunVar(nm(`y), 0.0f, fn (v) : set-x(v, y(pt-of()))),
+           FunVar(nm(`z), 0.0f, fn (v) : set-x(v, z(pt-of())))))
 
-public defn OrbitParticle (name:Symbol, center:V3f, radius:Float, duration:Float) -> OrbitParticle :
+public defn OrbitParticle (name:Symbol, time:SymVar, center:V3f, radius:Float, duration:Float) -> OrbitParticle :
   val orbit-circle = Circle(add-suffix(name, `circle), Vertex(add-suffix(name, `center), center),
                             SymVar(add-suffix(name, `radius), radius, false, false), true, false)
   val orbit-duration = SymVar(add-suffix(name, `duration), duration, false, false)
-  OrbitParticle(name, orbit-circle, orbit-duration)
+  OrbitParticle(name, time, orbit-circle, orbit-duration)
 
-public defn PointInterpolator (pt:V3f) -> (Int, Float) -> V3f :
-  fn (tick, it) : pt
+public defn PointInterpolator (pt:V3f) -> () -> V3f :
+  fn () : pt
 
 #for (Prim in [Float Float]
       Vec in [V2f V3f]

@@ -236,24 +236,24 @@ defn init-edges (id:Symbol, spec:KinematicsExpSpec, vertices:HashTable<Symbol,Ve
     link-nbrs[link1(joint)] = cons(link0(joint), link-nbrs[link1(joint)])
 
   ; println(spec)
-  println(to-tuple $ link-nbrs)
+  ; println(to-tuple $ link-nbrs)
 
   val visited-links? = HashSet<Symbol>()
   val origin = Vertex(root(spec), false, V3f(0.0f, 0.0f, 0.0f), true)
   vertices[root(spec)] = origin
   val link-exps = HashTable<Symbol,LinkExp>()
   let loop (from-link-name:False|Symbol = false, from-vertex:Vertex = origin, from-global-mat:MatExp = mov-mat-exp(exp(origin))) :
-    println("FROM-LINK %_ FROM-VERTEX %_" % [from-link-name, name(from-vertex)])
+    ; println("FROM-LINK %_ FROM-VERTEX %_" % [from-link-name, name(from-vertex)])
     for to-link-spec in links-with-node(spec, name(from-vertex)) do :
       val to-link-name = name(to-link-spec)
       if not visited-links?[to-link-name] :
-        println(">>> WALKING LINK %_" % [to-link-name])
+        ; println(">>> WALKING LINK %_" % [to-link-name])
         add(visited-links?, to-link-name)
         val [axis, angle, limits] =
           match(from-link-name:Symbol) :
             val joint-spec = joint-specs[[from-link-name, to-link-name]]
-            val angle-value = rnd(limits(joint-spec))
-            println("%_ %_ = %_" % [name(joint-spec), limits(joint-spec), radians-to-degrees(angle-value)])
+            val angle-value = 0.25f * rnd(limits(joint-spec))
+            ; println("%_ %_ = %_" % [name(joint-spec), limits(joint-spec), radians-to-degrees(angle-value)])
             val angle = SymVar(name(joint-spec), angle-value, limits(joint-spec)) 
             [axis(joint-spec), angle, limits(joint-spec)]
           else :
@@ -269,7 +269,7 @@ defn init-edges (id:Symbol, spec:KinematicsExpSpec, vertices:HashTable<Symbol,Ve
         val to-link-exp = LinkExp(to-link-name, len(to-link-spec), edge, axis, angle, limits, pose, to-global-mat-vars) ; to-local-mat, 
         link-exps[to-link-name] = to-link-exp
         loop(to-link-name, to-vertex, to-global-mat)
-        println("<<< WALKED LINK %_" % [to-link-name])
+        ; println("<<< WALKED LINK %_" % [to-link-name])
 
   ; println(to-tuple $ link-exps)
   ; println(to-tuple $ vertices)
@@ -302,7 +302,7 @@ defstruct KinematicsExpBody2 <: Module :
   cost : Exp with: (as-method => true, init => Const(0.0f))
 
 defn TimeKinematics (name:Symbol, radius:Float, time:SymVar) -> BindBody :
-  val path = PolyLinePath(`path, mag(xyz(radius)) $ square-path, 4.0f)
+  val path = PolyLinePath(`path, time, mag(xyz(radius)) $ square-path, 4.0f)
   BindBody(`tkb, KinematicsExpBody2(`tab),
            fn (m) : []
            fn (m) : cat-all $ [ [ c(m) => exp(point(path)) ] ]
@@ -392,6 +392,11 @@ defn all-repels (name:Symbol, verts:HashTable<Symbol, Vertex>) -> Seqable<MixCos
   else :
     []
 
+defn all-gyrations (name:Symbol, ts:Seqable<Exp>, links:Seqable<LinkExp>) -> Seqable<MixCost> :
+  for (link in links, t in ts, i in 0 to false) seq :
+    MixCost(name, symbol-join $ [`gyrate "-" id(link)],
+            SameConstraint(exp(angle(link)), Const(PI-F) * sin(t)))
+
 defn TimeExpKinematicsTwoPaths (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec,
                                 left-path:Path, left-tip:Symbol, right-path:Path, right-tip:Symbol) -> BindBody :
   TimeExpKinematics(name, time, spec, [ left-path, right-path ],
@@ -408,8 +413,48 @@ defn TimeExpKinematicsTwoPaths (name:Symbol, radius:Float, time:SymVar, spec:Kin
       ]
 )
 
+defn TimeExpKinematicsPathFall
+    (name:Symbol, radius:Float, param:Float, time:SymVar, spec:KinematicsExpSpec,
+     bottom-joints:Tuple<Symbol>, left-joints:Tuple<Symbol>, right-joints:Tuple<Symbol>) -> BindBody :
+  val all-joints = to-tuple $ cat-all $ [bottom-joints left-joints right-joints]
+  val joints = to-tuple $ cat-all $ [[bottom-joints[1], bottom-joints[2], bottom-joints[3]] [left-joints[0]] [right-joints[0]]]
+  TimeExpKinematics(name, time, spec, [ ], fn (m, verts) :
+    val joint-verts = to-hashtable<Symbol,Vertex> $ for j in all-joints seq : j => verts[j]
+    cat-all $ [[
+      MixCost(name, `centering, 0.25f, centering(m, CenterXZConstraint, Const(V3f(0.0f, 0.0f, 0.0f)))),
+      MixCost(name, `limit, limit-angles(m)),
+      MixCost(name, `fall, 0.1f, fall(m, joints, -8.0f))
+      MixCost(name, `above, 10.0f, above(m, all-joints, -8.0f)) ]
+      all-repels(name, joint-verts)
+      ])
+
+defn TimeExpKinematicsPathGyrate
+    (name:Symbol, radius:Float, param:Float, time:SymVar, spec:KinematicsExpSpec,
+     bottom-joints:Tuple<Symbol>, left-joints:Tuple<Symbol>, right-joints:Tuple<Symbol>) -> BindBody :
+  val all-joints = to-tuple $ cat-all $ [bottom-joints left-joints right-joints]
+  val joints = to-tuple $ cat-all $ [[bottom-joints[1], bottom-joints[2], bottom-joints[3]] [left-joints[0]] [right-joints[0]]]
+  TimeExpKinematics(name, time, spec, [ time ], fn (m, verts) :
+    val joint-verts = to-hashtable<Symbol,Vertex> $ for j in all-joints seq : j => verts[j]
+    val d = 2.0f
+    val t = exp(time) * Const(2.0f * PI-F / d)
+    ; val phases = for i in 0 to length(link-table(m)) seq: Const(0.5f * to-float(i))
+    ; val phases = for i in 0 to length(link-table(m)) seq: Const(rnd(Box1f(1.0f)))
+    ; ; sequential phases
+    ; val ts = for i in 0 to length(link-table(m)) seq: t + Const(rnd(Box1f(1.0f)))
+    ; ; random phases
+    ; val ts = for i in 0 to length(link-table(m)) seq: t + Const(rnd(Box1f(1.0f)))
+    ; ; random periods and phases
+    val ts = for i in 0 to length(link-table(m)) seq: t * Const(rnd(Box1f(0.25f, 2.0f))) + Const(rnd(Box1f(1.0f)))
+    cat-all $ [[
+      MixCost(name, `centering, centering(m, CenterConstraint, Const(V3f(0.0f, 0.0f, 0.0f)))),
+      MixCost(name, `limit, limit-angles(m)),
+      MixCost(name, `above, 10.0f, above(m, all-joints, -8.0f)) ]
+      all-repels(name, joint-verts)
+      all-gyrations(name, ts, values(link-table(m)))
+      ])
+
 defn TimeExpKinematicsPathCenter
-    (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec,
+    (name:Symbol, radius:Float, param:Float, time:SymVar, spec:KinematicsExpSpec,
      origin-joint:Symbol, bottom-joints:Tuple<Symbol>, left-joints:Tuple<Symbol>, right-joints:Tuple<Symbol>,
      path:Path, left-tip:Symbol, right-tip:Symbol) -> BindBody :
   val target = SymVar(add-suffix(name, `target), 0.0f, false, false)
@@ -418,19 +463,24 @@ defn TimeExpKinematicsPathCenter
   val mid = origin-joint
   TimeExpKinematics(name, time, spec, [ path, target ], fn (m, verts) :
     cat-all $ [[
-      ; ; trace with other hand
-      ; MixCost(name, `path, SameConstraint(exp(verts[right-tip]), exp(path)))
-      ; MixCost(name, `trace/x, SameConstraint(exp(verts[left-tip]), Vec3Exp(x(exp(verts[right-tip])), Const(-5.0f), z(exp(verts[right-tip])))))
-      ; MixCost(name, `centering, centering(m, CenterXZConstraint, Const(V3f(0.0f, 0.0f, 0.0f)))),
+      ; ; tips with distance between
+      ; MixCost(name, `centering, centering(m, CenterConstraint, Const(V3f(0.0f, 0.0f, 0.0f)))),
       ; MixCost(name, `limit, limit-angles(m)),
-      ; MixCost(name, `above, 10.0f, above(m, joints, -8.0f))
-      ; bondage with both hands on ground
-      MixCost(name, `path, SameConstraint(exp(verts[mid]), exp(point(path))))
-      MixCost(name, `trace/y, SameConstraint(y(exp(verts[left-tip])), Const(-8.0f)))
-      MixCost(name, `trace/y, SameConstraint(y(exp(verts[right-tip])), Const(-8.0f)))
+      ; MixCost(name, `touch, DistanceConstraint(verts[right-tip], verts[left-tip], Const(param)))
+      ; MixCost(name, `path, SameConstraint(exp(verts[left-tip]), exp(point(path))))
+      ; trace with other hand
+      MixCost(name, `path, SameConstraint(exp(verts[right-tip]), exp(point(path))))
+      MixCost(name, `trace/x, SameConstraint(exp(verts[left-tip]), Vec3Exp(x(exp(verts[right-tip])), Const(-5.0f), z(exp(verts[right-tip])))))
       MixCost(name, `centering, centering(m, CenterXZConstraint, Const(V3f(0.0f, 0.0f, 0.0f)))),
       MixCost(name, `limit, limit-angles(m)),
       MixCost(name, `above, 10.0f, above(m, joints, -8.0f))
+      ; ; bondage with both hands on ground
+      ; MixCost(name, `path, SameConstraint(exp(verts[mid]), exp(point(path))))
+      ; MixCost(name, `trace/y, SameConstraint(y(exp(verts[left-tip])), Const(-8.0f)))
+      ; MixCost(name, `trace/y, SameConstraint(y(exp(verts[right-tip])), Const(-8.0f)))
+      ; MixCost(name, `centering, centering(m, CenterXZConstraint, Const(V3f(0.0f, 0.0f, 0.0f)))),
+      ; MixCost(name, `limit, limit-angles(m)),
+      ; MixCost(name, `above, 10.0f, above(m, joints, -8.0f))
       ; ; bondage with arms behind
       ; MixCost(name, `centering, centering(m, CenterConstraint, Const(V3f(0.0f, -4.0f, 0.0f)))),
       ; MixCost(name, `limit, limit-angles(m)),
@@ -575,7 +625,7 @@ defn TimeExpKinematicsBounce (name:Symbol, radius:Float, time:SymVar, spec:Kinem
       MixCost(name, `bounce, SameConstraint(y(exp(verts[`origin])), y(path2))) ])
 
 defn TimeLeg (name:Symbol, radius:Float, time:SymVar) -> BindBody :
-  val path = PolyLinePath(`path, mag(xyz(radius)) $ square-path, 4.0f)
+  val path = PolyLinePath(`path, time, mag(xyz(radius)) $ square-path, 4.0f)
   val body = KinematicsBody(`main, robot-leg-spec)
   BindBody(`tkb, body,
            fn (m) : []
@@ -762,7 +812,7 @@ defn robot-arm5 (nameit:(Symbol, Int) -> Symbol, links:Tuple<Float>, joints:Tupl
     for (j in joints, idx in 1 to false) seq :
       JointExpSpec(nameit(`j, idx), j, default-limits, nameit(`l, idx - 1), nameit(`l, idx))
     ]
-  println(res)
+  ; println(res)
   res
 
 defn nameit (side:Symbol, kind:Symbol, idx:Int) :
@@ -781,16 +831,17 @@ defn nameit (side:Symbol, kind:Symbol, idx:Int) :
 ;         JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `bottom-l0, `right-l0) ]
 ;       ] )
 
+val hip-ang = 1.0f * PI-F
 val robot-simple-body-exp-spec5 =
   KinematicsExpSpec(`bottom-j6,
   ; KinematicsExpSpec(`bottom-j5,
     cat-all $ [
-      robot-arm5(nameit{`left, _, _},   [2.0f, 2.0f, 4.0f, 4.0f], [1, 2, 2])
-      robot-arm5(nameit{`right, _, _},  [2.0f, 2.0f, 4.0f, 4.0f], [1, 2, 2])
-      robot-arm5(nameit{`bottom, _, _}, [2.0f, 2.0f, 4.0f, 4.0f, 2.0f, 2.0f], [1, 2, 2, 2, 1])
+      robot-arm5(nameit{`left, _, _},   [1.0f, 1.5f, 4.5f, 4.5f], [1, 2, 2])
+      robot-arm5(nameit{`right, _, _},  [1.0f, 1.5f, 4.5f, 4.5f], [1, 2, 2])
+      robot-arm5(nameit{`bottom, _, _}, [1.0f, 1.5f, 4.5f, 4.5f, 1.5f, 1.0f], [1, 2, 2, 2, 1])
       ; robot-arm5(nameit{`bottom, _, _}, [2.0f, 4.0f, 4.0f, 2.0f, 2.0f], [1, 2, 2, 1])
-      [ JointExpSpec(`left-hip,  2, Box1f(-0.25f * PI-F, -0.25f * PI-F), `bottom-l0, `left-l0)
-        JointExpSpec(`right-hip, 2, Box1f( 0.25f * PI-F,  0.25f * PI-F), `bottom-l0, `right-l0) ]
+      [ JointExpSpec(`left-hip,  2, Box1f((- hip-ang)), `bottom-l0, `left-l0)
+        JointExpSpec(`right-hip, 2, Box1f(   hip-ang ), `bottom-l0, `right-l0) ]
       ] )
 
 ; val robot-simple-body-exp-spec5 = 
@@ -827,6 +878,18 @@ defn set-costs (b:Body, pred:Cost -> True|False) :
 defn set-costs (b:Body, costs:Seqable<Symbol>) :
   set-costs(b, { contains?(costs, name(_)) })
 
+defn add-costs (b:Body, new-cost-names:Tuple<Symbol>) :
+  rem-costs(b, new-cost-names)
+  add-all(costs(b), filter({ contains?(new-cost-names, name(_)) }, all-costs(b)))
+  for c in costs(b) do :
+    println(name(c))
+
+defn rem-costs (b:Body, new-cost-names:Seqable<Symbol>) :
+  for c in new-cost-names do :
+    remove-when({name(_) == c}, costs(b))
+  for c in costs(b) do :
+    println(name(c))
+
 public deftype DanceScheduler <: Scheduler
 defn DanceScheduler (b:Body, make-sched:Body -> Seq<Phrase>, x-0:Float, x-1:Float) -> DanceScheduler :
   val state = SchedulerState()
@@ -840,19 +903,19 @@ defn simple-sched (b:Body) -> Seq<Phrase> :
   repeatedly({ Phrase(1.0f) })
 
 defn two-paths-sched (b:Body, x-0:Float, x-1:Float) -> Seq<Phrase> :
-  val vtab = to-hashtable<Symbol,Vertex> $ for v in vertices(b) seq : name(v) => v
-  val left-path  = vtab[`left-path]
-  val right-path = vtab[`right-path]
+  val ptab = to-hashtable<Symbol,Path> $ for p in filter-by<Path>(entities(b)) seq : name(p) => p
+  val left-path  = ptab[`left-path]
+  val right-path = ptab[`right-path]
   val base-costs = [ `main/base `main/basing `main/centering `main/limit `main/repel ]
   generate<Phrase> :
     var last-pt = V3f(0.0f, 0.0f, 0.0f)
-    set-next(right-path, PointInterpolator(last-pt))
+    set-next(point(right-path), PointInterpolator(last-pt))
     while true :
       ; set-costs(b, cat(base-costs, [ `main/left-path `main/right-path ]))
-      ; set-next(right-path, PointInterpolator(last-pt))
+      ; set-next(point(right-path), PointInterpolator(last-pt))
       ; val pt = rnd(dims-to-box $ xyz(x-0))
       ; println("LPOINT %_ %_" % [last-pt, pt])
-      ; set-next(left-path, PointInterpolator(pt))
+      ; set-next(point(left-path), PointInterpolator(pt))
       ; yield(Phrase(2.0f))
       ; set-costs(b, cat(base-costs, [ `main/left-path `main/; touch ]))
       ; set-costs(b, cat(base-costs, [ `main/; touch ]))
@@ -863,26 +926,34 @@ defn two-paths-sched (b:Body, x-0:Float, x-1:Float) -> Seq<Phrase> :
       set-costs(b, cat(base-costs, [ `main/left-path `main/right-path ]))
       val pt = rnd(dims-to-box $ xyz(x-0)) + y3f(x-1)
       println("LPOINT %_" % [pt])
-      set-next(left-path, PointInterpolator(pt))
+      set-next(point(left-path), PointInterpolator(pt))
       yield(Phrase(1.0f))
       set-costs(b, cat(base-costs, [ `main/left-path `main/right-path ]))
-      set-next(right-path, PointInterpolator(pt))
+      set-next(point(right-path), PointInterpolator(pt))
       ; set-costs([ `main/touch ])
       println("RPOINT")
       yield(Phrase(1.0f))
 
       ; set-costs(b, cat(base-costs, [ `main/right-path ]))
       ; println("SQUARE")
-      ; set-next(left-path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f))
+      ; set-next(point(left-path), PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f))
       ; yield(Phrase(4.0f))
       ; println("CUBE")
-      ; set-next(left-path, PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 4.0f))
+      ; set-next(point(left-path), PolyLinePathInterpolator(mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 4.0f))
       ; yield(Phrase(4.0f))
 
 defn sigmoid (x:Float, t:Float) -> Float : 1.0f / (1.0f + exp(-1.0f * t * x))
 
 defn fade-in (duration:Float, do-set-gain:Float -> False) -> Phrase :
   Phrase(duration, fn (t) : do-set-gain(sigmoid(20.0f * (t / duration - 0.5f), 0.5f)))
+
+defn fade-out (duration:Float, do-set-gain:Float -> False) -> Phrase :
+  Phrase(duration, fn (t) : do-set-gain(sigmoid(20.0f * (0.5f - t / duration), 0.5f)))
+
+defn cross-fade (duration:Float, do-set-out-gain:Float -> False, do-set-in-gain:Float -> False) -> Phrase :
+  Phrase(duration, fn (t) :
+    do-set-out-gain(sigmoid(20.0f * (0.5f - t / duration), 0.5f))
+    do-set-in-gain(sigmoid(20.0f * (t / duration - 0.5f), 0.5f)))
 
 defn rnd-sched (b:Body, x-0:Float, x-1:Float) -> Seq<Phrase> :
   val vtab = to-hashtable<Symbol,Vertex> $ for v in vertices(b) seq : name(v) => v
@@ -900,9 +971,9 @@ defn rnd-sched (b:Body, x-0:Float, x-1:Float) -> Seq<Phrase> :
     yield(Phrase(100.0f))
 
 defn one-path-sched (b:Body, right-joints:Tuple<Symbol>, orbit-particle:OrbitParticle, x-0:Float, x-1:Float) -> Seq<Phrase> :
-  val vtab = to-hashtable<Symbol,Vertex> $ for v in vertices(b) seq : name(v) => v
-  val left-path  = vtab[`left-path]
-  val right-path = vtab[`right-path]
+  val ptab = to-hashtable<Symbol,Path> $ for p in filter-by<Path>(entities(b)) seq : id(p) => p
+  val left-path  = ptab[`left-path]
+  val right-path = ptab[`right-path]
   val base-costs = [ `main/base `main/basing `main/centering `main/straighten `main/limit `main/repel ]
   val cost-tbl = to-hashtable<Symbol, Cost> $ for c in all-costs(b) seq : name(c) => c
   val centering-cost = cost-tbl[`main/centering]
@@ -916,50 +987,67 @@ defn one-path-sched (b:Body, right-joints:Tuple<Symbol>, orbit-particle:OrbitPar
   val above-cost = cost-tbl[`main/above]
   ; val touch-costs = to-tuple $ for j in right-joints seq : symbol-join([`main "/" `touch "/" j])
   generate<Phrase> :
-    set-costs(b, [ `main/base `main/basing `main/above ])
+    set-costs(b, [ `main/base `main/basing `main/above])
     yield(Phrase(2.0f))
-    set-costs(b, [ `main/base `main/basing `main/above `main/straighten ])
-    yield(fade-in(6.0f, set-gain{straighten-cost, _}))
-    set-costs(b, [ `main/base `main/basing `main/above `main/fall ])
-    yield(fade-in(6.0f, set-gain{fall-cost, _}))
-    set-costs(b, [ `main/base `main/basing `main/above `main/straighten ])
-    yield(fade-in(6.0f, set-gain{straighten-cost, _}))
+    ; set-costs(b, [ `main/base `main/basing `main/above `main/straighten])
+    ; yield(fade-in(3.0f, set-gain{straighten-cost, _}))
+    ; set-costs(b, [ `main/base `main/basing `main/above `main/fall ])
+    ; yield(fade-in(2.0f, set-gain{fall-cost, _}))
+    ; set-costs(b, [ `main/base `main/basing `main/above `main/straighten ])
+    ; yield(fade-in(2.0f, set-gain{straighten-cost, _}))
+    ; set-costs(b, [ `main/base `main/basing `main/above `main/fall ])
+    ; yield(fade-in(3.0f, set-gain{fall-cost, _}))
+
     ; for c in touch-costs do :
     ;   set-costs(b, [ `main/base `main/basing `main/above c ])
     ;   yield(Phrase(2.0f))
     ; set-costs(b, [ `main/base `main/basing, `main/fall ])
     ; yield(Phrase(4.0f))
     ; set-gain(fall-cost, 10.0f)
-    ; set-next(left-path, PointInterpolator(V3f(-4.0f, -8.0f, 0.0f)))
-    ; set-next(right-path, PointInterpolator(V3f(4.0f, -8.0f, 0.0f)))
+    ; set-next(point(left-path), PointInterpolator(V3f(-4.0f, -8.0f, 0.0f)))
+    ; set-next(point(right-path), PointInterpolator(V3f(4.0f, -8.0f, 0.0f)))
     ; set-costs(b, [ `main/base `main/basing `main/above `main/left-path `main/right-path ])
     ; yield(fade-in(4.0f, fn (g) : (set-gain(left-path-cost, g), set-gain(right-path-cost, g))))
     ; set-costs(b, [ `main/base `main/basing, `main/straighten ])
     ; yield(Phrase(2.0f))
     
-    set-next(left-path, interpolator-of(set-params(orbit-particle, xyz(0.0f), x-0, 3.0f)))
-    set-next(right-path, PointInterpolator(V3f(4.0f, 8.0f, 0.0f)))
-    set-costs(b, [ `main/base `main/basing, `main/limit `main/repel `main/above `main/left-path `main/right-path ])
+    println("--- ORBIT LEFT WITH POINT RIGHT")
+    set-next(point(left-path), interpolator-of(set-params(orbit-particle, xyz(0.0f), x-0, 3.0f)))
+    set-next(point(right-path), PointInterpolator(V3f(4.0f, 8.0f, 0.0f)))
+    add-costs(b, [ `main/limit `main/repel `main/left-path `main/right-path ])
     yield(fade-in(4.0f, set-gain{left-path-cost, _}))
     yield(Phrase(4.0f))
 
-    set-costs(b, [ `main/base `main/basing, `main/limit `main/repel `main/above `main/left-path `main/on-line-right ])
-    yield(fade-in(4.0f, set-gain{on-line-right-cost, _}))
+    println("--- ORBIT LEFT WITH LINE RIGHT")
+    add-costs(b, [ `main/on-line-right ])
+    yield(cross-fade(4.0f, set-gain{right-path-cost, _}, set-gain{on-line-right-cost, _}))
+    rem-costs(b, [ `main/right-path ])
     yield(Phrase(4.0f))
 
-    set-costs(b, [ `main/base `main/basing, `main/limit `main/repel `main/above `main/left-path `main/fall-right ])
-    yield(fade-in(4.0f, set-gain{left-path-cost, _}))
+    println("--- ORBIT LEFT WITH PLANE RIGHT")
+    add-costs(b, [ `main/fall-right ])
+    yield(cross-fade(4.0f, set-gain{on-line-right-cost, _} set-gain{fall-right-cost, _}))
+    rem-costs(b, [ `main/on-line-right ])
     yield(Phrase(4.0f))
 
-    set-costs(b, [ `main/base `main/basing `main/straighten ])
-    yield(Phrase(2.0f))
+    println("--- STRAIGHTEN")
+    add-costs(b, [ `main/straighten])
+    yield(cross-fade(2.0f, set-gain{fall-right-cost, _}, set-gain{straighten-cost, _}))
+    rem-costs(b, [ `main/fall-right ])
 
-    set-next(left-path, interpolator-of(set-params(orbit-particle, xyz(0.0f), x-0, 3.0f)))
-    set-costs(b, [ `main/base `main/basing `main/limit `main/repel `main/above `main/centering `main/left-path ])
-    yield(fade-in(4.0f, set-gain{left-path-cost, _}))
+    println("--- ORBIT CENTERED")
+    set-next(point(left-path), interpolator-of(set-params(orbit-particle, xyz(0.0f), x-0, 3.0f)))
+    add-costs(b, [ `main/centering `main/left-path])
+    yield(cross-fade(4.0f, set-gain{straighten-cost, _}, set-gain{left-path-cost, _}))
+    rem-costs(b, [ `main/straighten ])
     yield(Phrase(4.0f))
-    set-costs(b, [ `main/base `main/basing `main/above `main/repel `main/straighten ])
-    yield(Phrase(2.0f))
+
+    println("--- STRAIGHTEN")
+    add-costs(b, [ `main/straighten ])
+    yield(cross-fade(2.0f, set-gain{left-path-cost, _}, set-gain{straighten-cost, _}))
+    rem-costs(b, [ `main/left-path])
+
+    println("--- RELAX")
     set-costs(b, base-costs)
     while true :
       yield(Phrase(1.0f))
@@ -987,48 +1075,60 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float, x-2
       ; "time-exp-kinematics-real4" : TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec4, `right-tip)
       "time-dancer-two-paths" :
         sched = two-paths-sched{_, x-0, x-1}
-        val left-path  = PolyLinePath(`left-path,  mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
-        val right-path = PolyLinePath(`right-path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        val left-path  = PolyLinePath(`left-path,  time, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        val right-path = PolyLinePath(`right-path, time, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
       "time-dancer-simple-path" :
-        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        val path = PolyLinePath(`path, time, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         TimeExpKinematicsSimplePath(`main, time, robot-arm-exp-spec, path, `hand)
       "time-dancer-square" :
-        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
+        val path = PolyLinePath(`path, time, mov-y(x-1) $ mag(xyz(x-0)) $ square-path, 4.0f)
         TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
       "time-dancer-cube" :
-        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 8.0f)
+        val path = PolyLinePath(`path, time, mov-y(x-1) $ mag(xyz(x-0)) $ cube-path, 8.0f)
         TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
       "time-dancer-uing" :
-        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
+        val path = PolyLinePath(`path, time, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
         TimeExpKinematicsPath(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
       "time-dancer-two-rnds" :
-        val left-path = OrbitParticle(`left-particle, V3f(-8.0f, x-1, 5.0f), x-0, 2.0f)
-        val right-path = OrbitParticle(`right-particle, V3f(8.0f, x-1, 5.0f), x-0, 4.0f)
+        val left-path = OrbitParticle(`left-particle, time, V3f(-8.0f, x-1, 5.0f), x-0, 2.0f)
+        val right-path = OrbitParticle(`right-particle, time, V3f(8.0f, x-1, 5.0f), x-0, 4.0f)
         TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
       "time-dancer-two-orbit2s" :
-        val left-path = Orbit2Particle(`left-particle, y3f(x-1), x-0, x-1, 0.25f, 3.0f)
-        val right-path = Orbit2Particle(`right-particle, y3f(x-1), x-0, x-1, 0.25f, 3.0f)
+        val left-path = Orbit2Particle(`left-particle, time, y3f(x-1), x-0, x-1, 0.25f, 3.0f)
+        val right-path = Orbit2Particle(`right-particle, time, y3f(x-1), x-0, x-1, 0.25f, 3.0f)
         TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
       "time-dancer-rnd" :
-        val path = OrbitParticle(`particle, y3f(x-1), x-0, 3.0f)
+        val path = OrbitParticle(`particle, time, y3f(x-1), x-0, 3.0f)
         val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
         val right-joints = [`right-j4, `right-j3, `right-j2, `right-j1]
         val bottom-joints = [`bottom-j4 `bottom-j3 `bottom-j2 `bottom-j1]
         ; sched = rnd-sched{_, x-0, x-1}
-        TimeExpKinematicsPathCenter(`main, x-0, time, robot-simple-body-exp-spec5,
+        TimeExpKinematicsPathCenter(`main, x-0, x-2, time, robot-simple-body-exp-spec5,
           `origin, bottom-joints, left-joints, right-joints, path, `left-j4, `right-j4)
+      "time-dancer-fall" :
+        val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
+        val right-joints = [`right-j4, `right-j3, `right-j2, `right-j1]
+        val bottom-joints = [`bottom-j5, `bottom-j4 `bottom-j3 `bottom-j2 `bottom-j1]
+        TimeExpKinematicsPathFall(`main, x-0, x-2, time, robot-simple-body-exp-spec5,
+          bottom-joints, left-joints, right-joints)
+      "time-dancer-gyrate" :
+        val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
+        val right-joints = [`right-j4, `right-j3, `right-j2, `right-j1]
+        val bottom-joints = [`bottom-j5, `bottom-j4 `bottom-j3 `bottom-j2 `bottom-j1]
+        TimeExpKinematicsPathGyrate(`main, x-0, x-2, time, robot-simple-body-exp-spec5,
+          bottom-joints, left-joints, right-joints)
       "time-dancer-rnd-orbit2" :
-        val path = Orbit2Particle(`particle, y3f(x-1), x-0, x-1, 4.0f, 1.0f)
+        val path = Orbit2Particle(`particle, time, y3f(x-1), x-0, x-1, 4.0f, 1.0f)
         val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
         val right-joints = [`right-j4, `right-j3, `right-j2, `right-j1]
         val bottom-joints = [`bottom-j4 `bottom-j3 `bottom-j2 `bottom-j1]
-        TimeExpKinematicsPathCenter(`main, x-0, time, robot-simple-body-exp-spec5,
+        TimeExpKinematicsPathCenter(`main, x-0, x-2, time, robot-simple-body-exp-spec5,
           `origin, bottom-joints, left-joints, right-joints, path, `left-j4, `right-j4)
       "time-dancer-one-path" :
-        val left-path = OrbitParticle(`left-path, y3f(x-1), x-0, 3.0f)
+        val left-path = OrbitParticle(`left-path, time, y3f(x-1), x-0, 3.0f)
         val path-speed = SymVar(`path-speed, 1.0f, false, false)
-        val right-path = PolyLinePath(`right-path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 1.0f)
+        val right-path = PolyLinePath(`right-path, time, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 1.0f)
         val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
         val right-joints = [`right-j4, `right-j3, `right-j2, `right-j1]
         val bottom-joints = [`bottom-j4 `bottom-j3 `bottom-j2 `bottom-j1]
@@ -1036,10 +1136,10 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float, x-2
         TimeExpKinematicsPathCenterStraighten(`main, x-0, time, robot-simple-body-exp-spec5,
            bottom-joints, left-joints, right-joints, left-path, `left-j4, right-path, `right-j4)
       "time-dancer-rnd-base" :
-        val path = OrbitParticle(`particle, y3f(x-1), x-0, 3.0f)
+        val path = OrbitParticle(`particle, time, y3f(x-1), x-0, 3.0f)
         TimeExpKinematicsPathCenterBase(`main, x-0, x-2, time, robot-simple-body-exp-spec5, path, `left-j4, `right-j4)
       "time-dancer-rnd-sphere" :
-        val path = OrbitParticle(`particle, y3f(x-1), 5.0f,  1.0f)
+        val path = OrbitParticle(`particle, time, y3f(x-1), 5.0f,  1.0f)
         TimeExpKinematicsPathSphere(`main, x-0, time, robot-simple-body-exp-spec5, path, `left-j2, `left-j4, `right-j4)
       ; "time-dancer-curl" :
       ;   TimeExpKinematicsCurl(`main, x-0, time, robot-simple-body-exp-spec5)
@@ -1048,23 +1148,31 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float, x-2
       ;   val path2 = PolyLinePath(`path2, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 6.0f)
       ;   val paths = [20.0f => path1, 20.0f => path2]
       ;   TimeExpKinematicsPaths(`main, x-0, time, robot-simple-body-exp-spec5, paths, `right-j4)
+      "time-dancer-hulu" :
+        val left-path = PolyLinePath(`left-path, time, mov-y(x-1) $ mov-x(-8.0f) $ reflect-xz $ mag(xyz(x-0)) $ circle-line, 4.0f * x-2)
+        val right-path = PolyLinePath(`right-path, time, mov-y(x-1) $ mov-x(8.0f) $ reflect-xz $ mag(xyz(x-0)) $ circle-line, 3.0f * x-2)
+        TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
+      "time-dancer-twist" :
+        val left-path = PolyLinePath(`left-path, time, mov-y(x-1) $ reflect-x $ reflect-yz $ mag(xyz(x-0)) $ round-you, x-2)
+        val right-path = PolyLinePath(`right-path, time, mov-y(x-1) $ reflect-yz $ mag(xyz(x-0)) $ round-you, x-2)
+        TimeExpKinematicsTwoPaths(`main, x-0, time, robot-simple-body-exp-spec5, left-path, `left-j4, right-path, `right-j4)
       "time-dancer-uing-wrist" :
-        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
+        val path = PolyLinePath(`path, time, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
         TimeExpKinematicsPathWrist(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4, `right-l3)
       "time-dancer-uing-straight" :
-        val path = PolyLinePath(`path, mag(xyz(x-0)) $ round-you, 8.0f)
+        val path = PolyLinePath(`path, time, mag(xyz(x-0)) $ round-you, 8.0f)
         TimeExpKinematicsPathStraight(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4, `right)
       "time-dancer-uing-straighten" :
-        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
+        val path = PolyLinePath(`path, time, mov-y(x-1) $ mag(xyz(x-0)) $ round-you, 8.0f)
         TimeExpKinematicsPathStraighten(`main, x-0, time, robot-simple-body-exp-spec5, path, `right-j4)
       "time-dancer-uing-mirror" :
-        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
+        val path = PolyLinePath(`path, time,  mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
         TimeExpKinematicsMirror(`main, x-0, time, robot-simple-body-exp-spec5, path, `left-j4, `right-j4)
       "time-dancer-uing-reflect" :
-        val path = PolyLinePath(`path, mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
+        val path = PolyLinePath(`path, time, mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
         TimeExpKinematicsReflect(`main, x-0, time, robot-simple-body-exp-spec5, path, `left-j4, `right-j4)
       "time-dancer-uing-circle" :
-        val path = PolyLinePath(`path, mov-z(2.0f) $ mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
+        val path = PolyLinePath(`path, time, mov-z(2.0f) $ mov-y(x-1) $ mag(xyz(2.0f * x-0)) $ round-you, 16.0f)
         TimeExpKinematicsCircle(`main, x-0, time, robot-simple-body-exp-spec5, path, `left-j4, `right-j4)
       "time-dancer-bounce" :
         TimeExpKinematicsBounce(`main, x-0, time, robot-simple-body-exp-spec5, `left-j4, `right-j4)
