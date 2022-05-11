@@ -173,10 +173,10 @@ public defn interpolator-of (p:Orbit2Particle) -> () -> V3f :
 
 public defn Orbit2Particle (name:Symbol, time:SymVar, center1:V3f, radius1:Float, radius2:Float, duration1:Float, duration2:Float) -> Orbit2Particle :
   defn nm (i:Symbol) : add-suffix(name, i)
-  val orbit-circle1 = Circle(add-suffix(name, `circle1), Vertex(add-suffix(name, `center), center1),
+  val orbit-circle1 = Circle(add-suffix(name, `circle1), Vertex(add-suffix(name, `center), false, center1, false),
                              SymVar(add-suffix(name, `radius), radius1, false, false), true, false)
   val orbit-duration1 = SymVar(add-suffix(name, `duration1), duration1, false, false)
-  val orbit-circle2 = Circle(add-suffix(name, `circle2), Vertex(add-suffix(name, `center), xyz(0.0f)),
+  val orbit-circle2 = Circle(add-suffix(name, `circle2), Vertex(add-suffix(name, `center), false, xyz(0.0f), false),
                              SymVar(add-suffix(name, `radius), radius2, false, false), true, false)
   val orbit-duration2 = SymVar(add-suffix(name, `duration1), duration2, false, false)
   val pt-of = Orbit2ParticleInterpolator(time, orbit-circle1, orbit-duration1, orbit-circle2, orbit-duration2)
@@ -231,7 +231,7 @@ public defn OrbitParticle (name:Symbol, time:SymVar, circle:Circle, duration:Sym
            FunVar(nm(`z), 0.0f, fn (v) : set-x(v, z(pt-of())))))
 
 public defn OrbitParticle (name:Symbol, time:SymVar, center:V3f, radius:Float, duration:Float) -> OrbitParticle :
-  val orbit-circle = Circle(add-suffix(name, `circle), Vertex(add-suffix(name, `center), center),
+  val orbit-circle = Circle(add-suffix(name, `circle), Vertex(add-suffix(name, `center), false, center, false),
                             SymVar(add-suffix(name, `radius), radius, false, false), true, false)
   val orbit-duration = SymVar(add-suffix(name, `duration), duration, false, false)
   OrbitParticle(name, time, orbit-circle, orbit-duration)

@@ -1,0 +1,38 @@
+defpackage playback :
+  import core
+  import collections
+
+defn main () :
+  val filename = "abc.txt"
+  val lines = to-seq $ split(slurp(filename), "\n")
+  val num = to-int!(next(lines))
+  val joint-names = Array<Symbol>(num)
+  val joint-flipped? = Array<True|False>(num)
+  for i in 0 to num do :
+    val elts = to-tuple $ split(next(lines), " ")
+    joint-names[to-int!(elts[0])] = to-symbol(elts[1])
+    joint-flipped?[to-int!(elts[0])] = elts[2] == true
+  val anglez = Vector<Array<Float>>()
+  let loop () :
+    if not empty?(lines) :
+      val line = next(lines)
+      if not empty?(line) :
+        val tick = to-int!(line)
+        val angles = Array<Float>(num)
+        for i in 0 to num do :
+          val elts = to-tuple $ split(next(lines), " ")
+          val [idx, angle] = [to-int!(elts[0]), to-float(elts[1]) as Float]
+          angles[idx] = (-1.0f when joint-flipped?[idx] else 1.0f) * angle
+        println(angles)
+        add(anglez, angles)
+        loop()
+      
+  ; for line in lines do :
+  ;   val elts = split(line, " ")
+  ;   for elt in elts do :
+  ;     print("[ %_ ]" % [elt])
+  ;   println("")
+
+main()
+
+  

@@ -11,6 +11,12 @@ package calculus defined-in "calculus.stanza"
 package calculus-app defined-in "calculus-app.stanza"
 package picker defined-in "picker.stanza"
 package pixel-picker defined-in "pixel-picker.stanza"
+package playback defined-in "playback.stanza"
+package dynamixel defined-in "dynamixel.stanza"
+package dynamixel requires :
+  ccflags :
+    on-platform :
+      os-x  : ("-ldxl_mac_c")
 
 package solvespace defined-in "solvespace.stanza"
 package solvespace requires :

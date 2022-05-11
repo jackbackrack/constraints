@@ -51,7 +51,7 @@ public defmulti set-x (v:AnyVar, x:Float)
 public defmulti dx (v:AnyVar) -> Float
 public defmulti set-dx (v:AnyVar, x:Float)
 public defmulti exp (v:AnyVar) -> Exp
-public defmulti update (v:AnyVar) -> False
+public defmulti update (v:AnyVar, fac:Float) -> False
 public defmulti copy (v:AnyVar, name:Symbol) -> AnyVar
   
 defmethod dx (v:AnyVar) -> Float : 0.0f
@@ -75,13 +75,16 @@ defmethod vars (v:ExpVar) -> Tuple<AnyVar> :
 public defn exps (v:ExpVar) -> Tuple<Exp> :
   [ exp(v) ]
 
-defmethod update (v:ExpVar) : false
+defmethod update (v:ExpVar, fac:Float) : false
 
 defmethod copy (v:ExpVar, name:Symbol) -> ExpVar :
   #ExpVar(name, e(v))
 
 public defn mux (e:Exp, c:Exp, a:Exp) -> Exp :
   e * c + (Const(1.0f) - e) * a
+
+public defn ExpVar (id:Symbol, e:Exp) -> ExpVar :
+  #ExpVar(id, e)
 
 public defn latch (name:Symbol, e:Exp, value:Exp) -> ExpVar :
   #ExpVar(name, mux(e, value, Variable(name)))
@@ -120,7 +123,7 @@ defmethod vars (v:FunVar) -> Tuple<AnyVar> :
 public defn exps (v:FunVar) -> Tuple<Exp> :
   [ exp(v) ]
 
-defmethod update (v:FunVar) : false
+defmethod update (v:FunVar, fac:Float) : false
 
 defmethod copy (v:FunVar, name:Symbol) -> FunVar :
   #FunVar(name, 0.0f, next(v))
@@ -134,6 +137,7 @@ public defstruct SymVar <: AnyVar :
   dx : Float with: (as-method => true, setter => set-dx, init => 0.0f)      ; value increment
   e : Exp with: (setter => set-e, init => Const(0.0f))   ; expression for computing dx
   v : Float with: (setter => set-v, init => 0.0f)
+  idx : Int with: (setter => set-idx, init => -1)
 with:
   printer => true
   constructor => #SymVar
@@ -502,10 +506,10 @@ public defn set-pos (v:Vertex, pos:V3f) -> False :
 public defn vel (v:Vertex) -> V3f :
   V3f(dx(x(v)), dx(y(v)), dx(z(v)))
 
-public defn update (v:Vertex) :
-  update(x(v))
-  update(y(v))
-  update(z(v))
+public defn update (v:Vertex, fac:Float) :
+  update(x(v), fac)
+  update(y(v), fac)
+  update(z(v), fac)
 
 public defstruct Circle <: Entity :
   id : Symbol with: (as-method => true)
@@ -879,10 +883,10 @@ public defn normal (x:Float, u:Float, s:Float) -> Float :
 defn clip (x:Float, mn:Float, mx:Float) -> Float :
   max(mn, min(mx, x))
 
-defmethod update (sv:SymVar) :
+defmethod update (sv:SymVar, fac:Float) :
   if dx-update?(sv) :
     ; println("%_ %_ + %_ * %_" % [name(v), x(v), DELTA, dx(v)])
-    val update = DELTA * dx(sv)
+    val update = fac * dx(sv)
     ; val fac = normal(update, 0.0f, UPDATE-STD-DEV)
     ; val new-x0 = x(sv) + fac * update
     ; ; SMOOTHING
@@ -890,18 +894,32 @@ defmethod update (sv:SymVar) :
     ; val nv = smoothness * v(sv) + (1.0f - smoothness) * update
     ; set-v(sv, nv)
     ; val new-x0 = x(sv) + nv
-    val new-x0 = x(sv) + clip(update, (- SPEED-LIMIT), SPEED-LIMIT)
-    val new-x = new-x0
+    ; val update0 = clip(update, (- SPEED-LIMIT), SPEED-LIMIT)
+    val update0 = update
+    ; println("%_: %_" % [id(sv), update])
+    ; println("%_ %_" % [update, update0])
+    val new-x0 = x(sv) + update0
+    ; val new-x = new-x0
     ; val new-x = smoothness * new-x0 + (1.0f - smoothness) * x(sv)
-    ; val new-x = match(limits(sv)) :
-    ;   (b:Box1f) : max(lo(b), min(hi(b), new-x0))
-    ;   (b:False) : new-x0
+    val new-x = match(limits(sv)) :
+      (b:Box1f) : clip(new-x0, lo(b), hi(b))
+      (b:False) : new-x0
     ; println("%_ %_ + %_ => %_" % [name(v), x(sv), DELTA * dx(sv), new-x])
     set-x(sv, new-x)
 
 public defn update (b:Body) :
+  var mx:Float = 0.0f
   for v in symvars(b) do :
-    update(v)
+    if dx-update?(v) :
+      mx = max(mx, abs(dx(v)))
+  val fac =
+    if (DELTA * mx) > SPEED-LIMIT :
+      min(DELTA, SPEED-LIMIT / (DELTA * mx))
+    else :
+      DELTA
+  ; println("MX %_ FAC %_" % [mx, fac])
+  for v in symvars(b) do :
+    update(v, fac)
 
 public defn next (b:Body) :
   for v in funvars(b) do :
@@ -1861,6 +1879,8 @@ public defn times (v0:Vec3Exp, v1:Vec3Exp) -> Vec3Exp :
 
 public defn divide (v0:Vec3Exp, v1:Exp) -> Vec3Exp :
   Vec3Exp(x(v0) / v1, y(v0) / v1, z(v0) / v1)
+
+public defn sum (xs:Seqable<Vec3Exp>) -> Vec3Exp : reduce(plus, Const(xyz(0.0f)), xs)
 
 public defn magnitude2 (v:Vec3Exp) -> Exp :
   dot(v, v)

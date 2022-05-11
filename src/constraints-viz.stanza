@@ -26,6 +26,7 @@ defpackage constraints-viz :
   import constraints
   import constraints-paths
   import stz/asmjit
+  import opencv
 
 public deftype ConstraintsModel <: Model
 defmulti value (v:ConstraintsModel) -> Scheduler
@@ -53,7 +54,7 @@ defn my-angle (a:V3f, b:V3f) -> Float :
 
 defn color-of (ref?:True|False) :
   if ref? :
-    gl-color3f(0.0f, 0.5f, 0.0f)
+    gl-color3f(0.0f, 0.25f, 0.0f)
   else :
     gl-color3f(1.0f, 1.0f, 1.0f)
 
@@ -152,7 +153,7 @@ public defn ConstraintsView (iname:String, c:ConstraintsModel, minibuf:StringBuf
       val s = min(w, h) * 0.5f
       gl-push-matrix()
       gl-scalef(s, s, s)
-      val s2 = 0.1f
+      val s2 = 0.1f * 0.275f
       gl-scalef(s2, s2, s2)
       ; val tdms = dims(bounds(poly(leds)))
       ; val ts = 0.8f * 0.5f * min(x(tdms) / w, y(tdms) / h)
@@ -192,13 +193,15 @@ public defmulti init? (v:ConstraintsViz) -> True|False
 public defmulti set-init? (v:ConstraintsViz, x:True|False) -> False
 public defmulti vars (v:ConstraintsViz) -> Tuple<AnyVar>
 public defmulti time (v:ConstraintsViz) -> SymVar
+public defmulti dumper (v:ConstraintsViz) -> False|FileOutputStream
 
-public defn ConstraintsViz (win:Window, init-sched:Scheduler, vars:Tuple<AnyVar>, time:SymVar) :
+public defn ConstraintsViz (win:Window, init-sched:Scheduler, vars:Tuple<AnyVar>, time:SymVar, filename:String) :
   val state = VizState(win)
   var sched = init-sched
   var running? = false
   var step? = false
   var init? = false
+  var file = FileOutputStream(filename) when (length(filename) > 0)
   new ConstraintsViz :
     defmethod state (this) : state
     defmethod scheduler (this) : sched
@@ -211,6 +214,7 @@ public defn ConstraintsViz (win:Window, init-sched:Scheduler, vars:Tuple<AnyVar>
     defmethod set-init? (this, b:True|False) : init? = b
     defmethod vars (this) : vars
     defmethod time (this) : time
+    defmethod dumper (this) : file
 
 defn run-cmd (v:ConstraintsViz, key:Key, cmds:Cmds) -> Cmd :
   install $ Cmd("run", { set-running?(v, true) }, key, cmds)
@@ -252,8 +256,12 @@ defmethod init (v:ConstraintsViz) -> False :
     set-tile(v, children(root(v))[0] as Tile)
     end-init(v)
 
-defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
-  set-fps(v, 1.0f / delta)
+defn pad-zeros (tot:Int, x:Int) -> String :
+  val xs = to-string(x)
+  string-join $ cat(repeatedly({ "0" }, tot - length(xs)), [xs])
+
+defmethod step (v:ConstraintsViz, real-delta:Float, w:Float, h:Float) -> False :
+  set-fps(v, 1.0f / real-delta)
   #if-defined(PLATFORM-OS-X) :
     gl-line-width(3.0f)
   #else :
@@ -263,7 +271,11 @@ defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
   val run? = running?(v) or step?(v)
   if run? :
     val s = scheduler(v)
+    if top-dump-frames? :
+      val filename = string-join $ ["dump/pic-" pad-zeros(4, tick(s)) ".jpg"]
+      cv-dump-viewport(filename)
     val b = body(s)
+    val delta = (1.0f / to-float(top-frame-rate)) when top-step-time? else real-delta
     set-t(s, t(s) + delta)
     while t(s) > end-t(s) :
       val phrase = next(schedule(s))
@@ -282,7 +294,21 @@ defmethod step (v:ConstraintsViz, delta:Float, w:Float, h:Float) -> False :
       apply(b)
       update(b)
     stop(timer)
-
+    match(dumper(v)) :
+      (f:FileOutputStream) :
+        if tick(s) == 1 :
+          val num = count(dx-update?, symvars(b))
+          println(f, num)
+          for sv in symvars(b) do :
+            if dx-update?(sv) :
+              println(f, "%_ %_" % [idx(sv), name(sv)])
+        println(f, tick(s) - 1)
+        for sv in symvars(b) do :
+          if dx-update?(sv) :
+            println(f, "%_ %_" % [idx(sv), x(sv)])
+        flush(f)
+      (f) : false
+    
     ; set-t(body(v), t(body(v)) + delta)
     ; set-tick(body(v), tick(body(v)) + 1)
     ; set-x(time(v), t(body(v)))
@@ -317,17 +343,25 @@ defmethod drag (v:ConstraintsViz, names:Seqable<V3i>, delta:V2f) -> False :
 ;;   if input-filename != "" :
 
 public val screen-props = Props()
-public var win-width = 640
+public var win-width = 1920 / 2 ; 640
 install(screen-props, IntProp("width", { win-width }, { win-width = _ }))
-public var win-height = 480
+public var win-height = 1080 / 2 ; 480
 install(screen-props, IntProp("height", { win-height }, { win-height = _ }))
 public var is-fullscreen = false
 install(screen-props, BoolProp("is-fullscreen", { is-fullscreen }, { is-fullscreen = _ }))
 install(screen-props, BoolProp("is-jit", { jit? }, { jit? = _ }))
 public var top-trace? = false
 install(screen-props, BoolProp("trace", { top-trace? }, { top-trace? = _ }))
+public var top-step-time? = false
+install(screen-props, BoolProp("is-step-time", { top-step-time? }, { top-step-time? = _ }))
+public var top-dump-frames? = false
+install(screen-props, BoolProp("is-dump-frames", { top-dump-frames? }, { top-dump-frames? = _ }))
+public var top-frame-rate = 30
+install(screen-props, IntProp("frame-rate", { top-frame-rate }, { top-frame-rate = _ }))
 public var top-name = "vertical-line"
 install(screen-props, StringProp("name", { top-name }, { top-name = _ }))
+public var top-dumper-filename = ""
+install(screen-props, StringProp("dumper-filename", { top-dumper-filename }, { top-dumper-filename = _ }))
 public var top-seed = -1
 install(screen-props, IntProp("seed", { top-seed }, { top-seed = _ }))
 public var top-show-labels? = false
@@ -350,6 +384,8 @@ public var top-x-1 = 0.0f
 install(screen-props, FloatProp("x-1", { top-x-1 }, { top-x-1 = _ }))
 public var top-x-2 = 0.0f
 install(screen-props, FloatProp("x-2", { top-x-2 }, { top-x-2 = _ }))
+public var top-x-3 = 0.0f
+install(screen-props, FloatProp("x-3", { top-x-3 }, { top-x-3 = _ }))
 public var top-kind-0 = "tet"
 install(screen-props, StringProp("kind-0", { top-kind-0 }, { top-kind-0 = _ }))
 
@@ -370,6 +406,8 @@ install(screen-props, BoolProp("is-trace", { TRACE? }, { TRACE? = _ }))
 install(screen-props, BoolProp("is-debug", { DEBUG? }, { DEBUG? = _ }))
 install(screen-props, BoolProp("is-time", { TIME? }, { TIME? = _ }))
 install(screen-props, BoolProp("is-disassemble", { disassemble? }, { disassemble? = _ }))
+public var top-show-torques?:True|False = false
+install(screen-props, BoolProp("is-show-torques", { top-show-torques? }, { top-show-torques? = _ }))
 
 public defn run-module (m:Module, time:SymVar, scheduler:Body -> Scheduler) :
   val rt = jit-runtime-new()
@@ -392,7 +430,7 @@ public defn run-module (m:Module, time:SymVar, scheduler:Body -> Scheduler) :
   println("START COMPILING...")
   compile(c, rt)
   println("DONE COMPILING...")
-  val v = ConstraintsViz(win, scheduler(c), symvars(c), time)
+  val v = ConstraintsViz(win, scheduler(c), symvars(c), time, top-dumper-filename)
   set-throttling?(v, false)
   init(v)
   parse-args(props(v), command-line-arguments())

@@ -1,0 +1,320 @@
+defpackage dynamixel :
+  import core
+
+extern portHandler: (ptr<byte>) -> int
+extern packetHandler: () -> int
+extern openPort: (int) -> int
+extern closePort: (int) -> int
+extern setBaudRate: (int, int) -> int
+extern write1ByteTxRx: (int, int, int, int, int) -> int
+extern write4ByteTxRx: (int, int, int, int, int) -> int
+extern read4ByteTxRx: (int, int, int, int) -> int
+extern getLastTxRxResult: (int, int) -> int
+extern getTxRxResult: (int, int) -> ptr<byte>
+extern getLastRxPacketError: (int, int) -> int
+extern getRxPacketError: (int, int) -> int
+
+extern groupSyncWrite: (int, int, int, int) -> int
+extern groupSyncRead: (int, int, int, int) -> int
+extern groupSyncReadAddParam: (int, int) -> int
+extern groupSyncWriteAddParam: (int, int, int, int) -> int
+extern groupSyncWriteTxPacket: (int) -> int
+extern groupSyncWriteClearParam: (int) -> int
+extern groupSyncReadTxRxPacket: (int) -> int
+extern groupSyncReadIsAvailable: (int, int, int, int) -> int
+extern groupSyncReadGetData: (int, int, int, int) -> int
+
+public lostanza defn port-handler (filename:ref<String>) -> ref<Int> :
+  val res = call-c portHandler(addr!(filename.chars))
+  return new Int{ res }
+
+public lostanza defn packet-handler () -> ref<Int> :
+  val res = call-c packetHandler()
+  return new Int{ res }
+  
+public lostanza defn open-port (port-num:ref<Int>) -> ref<True|False> :
+  val res = call-c openPort(port-num.value)
+  if res == 1 :
+    return true
+  else :
+    return false
+  
+public lostanza defn close-port (port-num:ref<Int>) -> ref<True|False> :
+  val res = call-c closePort(port-num.value)
+  if res == 1 :
+    return true
+  else :
+    return false
+  
+public lostanza defn set-baud-rate (port-num:ref<Int>, baud-rate:ref<Int>) -> ref<True|False> :
+  val res = call-c setBaudRate(port-num.value, baud-rate.value)
+  if res == 1 :
+    return true
+  else :
+    return false
+  
+public lostanza defn write-1-byte-tx-rx (port-num:ref<Int>, id:ref<Int>, address:ref<Int>, data:ref<Int>) -> ref<Int> :
+  val res = call-c write1ByteTxRx(port-num.value, 2, id.value, address.value, data.value)
+  return new Int{ res }
+  
+public lostanza defn write-4-byte-tx-rx (port-num:ref<Int>, id:ref<Int>, address:ref<Int>, data:ref<Int>) -> ref<Int> :
+  val res = call-c write4ByteTxRx(port-num.value, 2, id.value, address.value, data.value)
+  return new Int{ res }
+  
+public lostanza defn read-4-byte-tx-rx (port-num:ref<Int>, id:ref<Int>, address:ref<Int>) -> ref<Int> :
+  val res = call-c read4ByteTxRx(port-num.value, 2, id.value, address.value)
+  return new Int{ res }
+  
+public lostanza defn get-last-tx-rx-result (port-num:ref<Int>) -> ref<Int> :
+  val res = call-c getLastTxRxResult(port-num.value, 2)
+  return new Int{ res }
+  
+public lostanza defn get-tx-rx-result (result:ref<Int>) -> ref<String> :
+  val res = call-c getTxRxResult(2, result.value)
+  return String( res )
+  
+public lostanza defn get-last-rx-packet-error (port-num:ref<Int>) -> ref<Int> :
+  val res = call-c getLastRxPacketError(port-num.value, 2)
+  return new Int{ res }
+  
+public lostanza defn get-rx-packet-error (error:ref<Int>) -> ref<String> :
+  val res = call-c getRxPacketError(2, error.value)
+  return String( res )
+
+public lostanza defn group-sync-write (port-num:ref<Int>, start-address:ref<Int>, data-length:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncWrite(port-num.value, 2, start-address.value, data-length.value)
+  return new Int{ res }
+  
+public lostanza defn group-sync-read (port-num:ref<Int>, start-address:ref<Int>, data-length:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncRead(port-num.value, 2, start-address.value, data-length.value)
+  return new Int{ res }
+  
+public lostanza defn group-sync-read-add-param (group-num:ref<Int>, id:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncReadAddParam(group-num.value, id.value)
+  return new Int{ res }
+  
+public lostanza defn group-sync-write-add-param (group-num:ref<Int>, id:ref<Int>, data:ref<Int>, data-length:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncWriteAddParam(group-num.value, id.value, data.value, data-length.value)
+  return new Int{ res }
+  
+public lostanza defn group-sync-write-tx-packet (group-num:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncWriteTxPacket(group-num.value)
+  return new Int{ res }
+  
+public lostanza defn group-sync-write-clear-param (group-num:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncWriteClearParam(group-num.value)
+  return new Int{ res }
+  
+public lostanza defn group-sync-read-tx-rx-packet (group-num:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncReadTxRxPacket(group-num.value)
+  return new Int{ res }
+  
+public lostanza defn group-sync-read-is-available (group-num:ref<Int>, id:ref<Int>, address:ref<Int>, data-length:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncReadIsAvailable(group-num.value, id.value, address.value, data-length.value)
+  return new Int{ res }
+  
+public lostanza defn group-sync-read-get-data (group-num:ref<Int>, id:ref<Int>, address:ref<Int>, data-length:ref<Int>) -> ref<Int> :
+  val res = call-c groupSyncReadGetData(group-num.value, id.value, address.value, data-length.value)
+  return new Int{ res }
+  
+public val BROADCAST-ID =        0xFE    ; 254
+public val MAX-ID =              0xFC    ; 252
+
+public val INST-PING =           1
+public val INST-READ =           2
+public val INST-WRITE =          3
+public val INST-REG-WRITE =      4
+public val INST-ACTION =         5
+public val INST-FACTORY-RESET =  6
+public val INST-SYNC-WRITE =     131     ; 0x83
+public val INST-BULK-READ =      146     ; 0x92
+public val INST-REBOOT =         8
+public val INST-CLEAR =          16      ; 0x10
+public val INST-STATUS =         85      ; 0x55
+public val INST-SYNC-READ =      130     ; 0x82
+public val INST-BULK-WRITE =     147     ; 0x93
+
+; Communication Result
+public val COMM-SUCCESS =        0       ; tx or rx packet communication success
+public val COMM-PORT-BUSY =      -1000   ; Port is busy (in use)
+public val COMM-TX-FAIL =        -1001   ; Failed transmit instruction packet
+public val COMM-RX-FAIL =        -1002   ; Failed get status packet
+public val COMM-TX-ERROR =       -2000   ; Incorrect instruction packet
+public val COMM-RX-WAITING =     -3000   ; Now recieving status packet
+public val COMM-RX-TIMEOUT =     -3001   ; There is no status packet
+public val COMM-RX-CORRUPT =     -3002   ; Incorrect status packet
+public val COMM-NOT-AVAILABLE =  -9000   ;
+
+; Control table address
+val ADDR-PRO-TORQUE-ENABLE      =   64                 ; Control table address is different in Dynamixel model
+val ADDR-PRO-GOAL-POSITION      =   116
+val ADDR-PRO-PRESENT-POSITION   =   132
+
+; Data Byte Length
+val LEN-PRO-GOAL-POSITION       =   4
+val LEN-PRO-PRESENT-POSITION    =   4
+
+; Default setting
+val LO-ID                       =   11                   ; Dynamixel#1 ID: 1
+val HI-ID                       =   12                   ; Dynamixel#2 ID: 2
+val BAUDRATE                    =   57600
+val DEVICENAME                  =   "/dev/tty.usbserial-FT6RW6SF"
+                                                            ; ex) Windows: "COM1"   Linux: "/dev/ttyUSB0" Mac: "/dev/tty.usbserial-*"
+
+val TORQUE-ENABLE               =   1                   ; Value for enabling the torque
+val TORQUE-DISABLE              =   0                   ; Value for disabling the torque
+val DXL-MINIMUM-POSITION-VALUE  =   0                   ; Dynamixel will rotate between this value
+val DXL-MAXIMUM-POSITION-VALUE  =   4095                ; and this value (note that the Dynamixel would not move when the position value is out of movable range. Check e-manual about the range of the Dynamixel you use.)
+val DXL-AVERAGE-POSITION-VALUE  =   ((DXL-MINIMUM-POSITION-VALUE + DXL-MAXIMUM-POSITION-VALUE) / 2)
+val DXL-MOVING-STATUS-THRESHOLD =   20                  ;  Dynamixel moving status threshold
+
+
+defn enable-torques (port-num:Int, ids:Tuple<Int>) :
+  for id in ids do :
+    write-1-byte-tx-rx(port-num, id, ADDR-PRO-TORQUE-ENABLE, TORQUE-ENABLE)
+    val dxl-comm-result = get-last-tx-rx-result(port-num)
+    if dxl-comm-result != COMM-SUCCESS :
+      println("%_" % [get-tx-rx-result(dxl-comm-result)])
+    else :
+      val dxl-error = get-last-rx-packet-error(port-num)
+      if dxl-error != 0 :
+        println("%_" % [get-rx-packet-error(dxl-error)])
+      else :
+        println("Dynamixel#%_ has been successfully connected" % [id])
+
+defn disable-torques (port-num:Int, ids:Tuple<Int>) :
+  for id in ids do :
+    write-1-byte-tx-rx(port-num, id, ADDR-PRO-TORQUE-ENABLE, TORQUE-DISABLE)
+    val dxl-comm-result = get-last-tx-rx-result(port-num)
+    if dxl-comm-result != COMM-SUCCESS :
+      println("%_" % [get-tx-rx-result(dxl-comm-result)])
+    else :
+      val dxl-error = get-last-rx-packet-error(port-num)
+      if dxl-error != 0 :
+        println("%_" % [get-rx-packet-error(dxl-error)])
+
+defn setup-read-params (port-num:Int, groupread-num:Int, ids:Tuple<Int>) -> True|False :
+  label<True|False> return :
+    for id in ids do :
+      ; Add parameter storage for present position value
+      val dxl-addparam-result = group-sync-read-add-param(groupread-num, id)
+      if dxl-addparam-result != 1 :
+        println("[ID:%_] groupSyncRead addparam failed" % [id])
+        return(false)
+    true
+
+defn write-goal-positions (port-num:Int, groupwrite-num:Int, ids:Tuple<Int>, goal-positions:Tuple<Int>) -> True|False :
+  label<True|False> return :
+    for (id in ids, pos in goal-positions) do :
+      ; Add goal position value to the Syncwrite storage
+      val dxl-addparam-result = group-sync-write-add-param(groupwrite-num, id, pos, LEN-PRO-GOAL-POSITION)
+      if dxl-addparam-result != 1 :
+        println("[ID:%_] groupSyncWrite addparam failed" % [id])
+        return(false)
+
+    ; Syncwrite goal position
+    group-sync-write-tx-packet(groupwrite-num)
+    val dxl-comm-result = get-last-tx-rx-result(port-num)
+    if dxl-comm-result != COMM-SUCCESS :
+      println("%_" % [get-tx-rx-result(dxl-comm-result)])
+
+    ; Clear syncwrite parameter storage
+    group-sync-write-clear-param(groupwrite-num)
+    return(true)
+
+defn read-present-positions (port-num:Int, groupread-num:Int, ids:Tuple<Int>, present-positions:Array<Int>) -> True|False:
+  label<True|False> return :
+    ; Syncread present position
+    group-sync-read-tx-rx-packet(groupread-num)
+    val dxl-comm-result = get-last-tx-rx-result(port-num)
+    if dxl-comm-result != COMM-SUCCESS :
+      println("%_" % [get-tx-rx-result(dxl-comm-result)])
+
+    for id in ids do :
+      ; Check if groupsyncread data of Dynamixel#1 is available
+      val dxl-getdata-result = group-sync-read-is-available(groupread-num, id, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
+      if dxl-getdata-result != 1 :
+        println("[ID:%_] groupSyncRead getdata failed" % [id])
+        return(false)
+
+    for id in ids do :
+      ; Get Dynamixel present position value
+      present-positions[id] = group-sync-read-get-data(groupread-num, id, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
+
+    true
+
+defn servo-goal-positions
+    (port-num:Int, groupread-num:Int, groupwrite-num:Int, ids:Tuple<Int>, goal-positions:Tuple<Int>, present-positions:Array<Int>) -> True|False :
+  label<True|False> return :
+    if write-goal-positions(port-num, groupwrite-num, ids, goal-positions) == 1 :
+      let loop () :
+        if read-present-positions(port-num, groupread-num, ids, present-positions) == 0 :
+          return(false)
+        var is-moving:True|False = false
+        for (id in ids, pos in goal-positions) do :
+          println("[ID:%_] GoalPos:%_  PresPos:%_\t" % [id, pos, present-positions[id]])
+          is-moving = is-moving or (abs(pos - present-positions[id]) > DXL-MOVING-STATUS-THRESHOLD)
+        println("")
+        loop() when is-moving
+      true
+
+val ESC-ASCII-VALUE = to-char(0x1b)
+
+defn main () :
+  label<Int> return :
+    ; Initialize PortHandler Structs
+    ; Set the port path
+    ; Get methods and members of PortHandlerLinux or PortHandlerWindows
+    val port-num = port-handler(DEVICENAME)
+
+    ; Initialize PacketHandler Structs
+    packet-handler()
+
+    ; Initialize Groupsyncwrite Structs
+    val groupwrite-num = group-sync-write(port-num, ADDR-PRO-GOAL-POSITION, LEN-PRO-GOAL-POSITION)
+
+    ; Initialize Groupsyncread Structs for Present Position
+    val groupread-num = group-sync-read(port-num, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
+
+    var index:Int = 0
+    ; val dxl-goal-position = [ DXL-AVERAGE-POSITION-VALUE ]  ; Goal position
+    val goal-positions = [ DXL-MINIMUM-POSITION-VALUE, DXL-MAXIMUM-POSITION-VALUE ]
+
+    ; Open port
+    if open-port(port-num) :
+      println("Succeeded to open the port!")
+    else :
+      println("Failed to open the port!\n")
+      println("Press any key to terminate...\n")
+      return(0)
+
+    ; Set port baudrate
+    if set-baud-rate(port-num, BAUDRATE) :
+      println("Succeeded to change the baudrate!")
+    else :
+      println("Failed to change the baudrate!\n")
+      println("Press any key to terminate...\n")
+      return(0)
+
+    val ids = to-tuple $ (LO-ID through HI-ID)
+    val goal-positionz = to-tuple $ for pos in goal-positions seq : to-tuple $ repeatedly({ pos }, length(ids))
+
+    enable-torques(port-num, ids)
+
+    if not setup-read-params(port-num, groupread-num, ids) :
+      return(0)
+
+    val present-positions = Array<Int>(256)
+
+    let loop () :
+      println("Press any key to continue! (or press ESC to quit!)")
+      if get-char(STANDARD-INPUT-STREAM) != ESC-ASCII-VALUE :
+        if servo-goal-positions(port-num, groupread-num, groupwrite-num, ids, goal-positionz[index], present-positions) :
+          index = (index + 1) % length(goal-positionz)
+          loop()
+
+    disable-torques(port-num, ids)
+    close-port(port-num)
+    1
+
+main()

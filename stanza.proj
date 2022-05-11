@@ -11,6 +11,16 @@ build picker :
   pkg: "pkgs"
   o: "build/picker"
 
+build dynamixel :
+  inputs: dynamixel
+  pkg: "pkgs"
+  o: "build/dynamixel"
+
+build playback :
+  inputs: playback
+  pkg: "pkgs"
+  o: "build/playback"
+
 build constraints-app :
   inputs: constraints-app
   pkg: "pkgs"
