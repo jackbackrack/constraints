@@ -16,6 +16,11 @@ build dynamixel :
   pkg: "pkgs"
   o: "build/dynamixel"
 
+build sony-camera-remote :
+  inputs: sony-camera-remote
+  pkg: "pkgs"
+  o: "build/sony-camera-remote"
+
 build playback :
   inputs: playback
   pkg: "pkgs"

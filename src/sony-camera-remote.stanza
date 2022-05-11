@@ -1,0 +1,25 @@
+defpackage sony-camera-remote :
+  import core
+  import collections
+
+extern close_sony_remote: () -> int
+extern open_sony_remote: () -> int
+extern snap_sony_remote: () -> int
+
+public lostanza defn open-sony-remote () -> ref<False> :
+  call-c open_sony_remote()
+  return false  
+
+public lostanza defn snap-sony-remote () -> ref<False> :
+  call-c snap_sony_remote()
+  return false  
+
+public lostanza defn close-sony-remote () -> ref<False> :
+  call-c close_sony_remote()
+  return false  
+
+defn main () :
+  println("HELLO")
+
+main()
+  

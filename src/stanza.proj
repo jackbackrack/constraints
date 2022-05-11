@@ -17,6 +17,7 @@ package dynamixel requires :
   ccflags :
     on-platform :
       os-x  : ("-ldxl_mac_c")
+      linux  : ("-ldxl_x64_c")
 
 package solvespace defined-in "solvespace.stanza"
 package solvespace requires :
@@ -30,3 +31,14 @@ compile file "{WORKDIR}/build/solvespace.o" from "solvespace.cpp" :
   "g++ -std=c++11 -D{PLATFORM} -DGL_SILENCE_DEPRECATION -c {.}/solvespace.cpp -o {WORKDIR}/build/solvespace.o"
 
 package solvespace-demo defined-in "solvespace-demo.stanza"
+
+package sony-camera-remote defined-in "sony-camera-remote.stanza"
+package sony-camera-remote requires :
+  ccfiles :
+    "{WORKDIR}/build/sony-camera-remote.o"
+  ccflags :
+    on-platform :
+      os-x  : ( "-lslvs" "-lc++") ; TODO
+      linux : ( "-lCr_Core" "-lsony-camera-remote" "-lstdc++fs" "-lstdc++")
+compile file "{WORKDIR}/build/sony-camera-remote.o" from "sony-camera-remote.cpp" :
+  "/usr/bin/c++ -O3 -I/usr/local/include/sony-camera-remote -I/usr/local/include/CRSDK/ -DNDEBUG -DUSE_EXPERIMENTAL_FS --std=c++17 -c {.}/sony-camera-remote.cpp -o {WORKDIR}/build/sony-camera-remote.o"
