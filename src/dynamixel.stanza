@@ -168,6 +168,10 @@ val DXL-MAXIMUM-POSITION-VALUE  =   4095                ; and this value (note t
 val DXL-AVERAGE-POSITION-VALUE  =   ((DXL-MINIMUM-POSITION-VALUE + DXL-MAXIMUM-POSITION-VALUE) / 2)
 val DXL-MOVING-STATUS-THRESHOLD =   20                  ;  Dynamixel moving status threshold
 
+public defstruct DynamixelError <: Exception :
+  message: String|Printable
+defmethod print (o:OutputStream, e:DynamixelError) :
+  print(o, "DynamixelError: %_" % [message])
 
 defn enable-torques (port-num:Int, ids:Tuple<Int>) :
   for id in ids do :
@@ -178,7 +182,7 @@ defn enable-torques (port-num:Int, ids:Tuple<Int>) :
     else :
       val dxl-error = get-last-rx-packet-error(port-num)
       if dxl-error != 0 :
-        println("%_" % [get-rx-packet-error(dxl-error)])
+        throw(DynamixelError(get-rx-packet-error(dxl-error)))
       else :
         println("Dynamixel#%_ has been successfully connected" % [id])
 
@@ -191,7 +195,7 @@ defn disable-torques (port-num:Int, ids:Tuple<Int>) :
     else :
       val dxl-error = get-last-rx-packet-error(port-num)
       if dxl-error != 0 :
-        println("%_" % [get-rx-packet-error(dxl-error)])
+        throw(DynamixelError(get-rx-packet-error(dxl-error)))
 
 defn setup-read-params (port-num:Int, groupread-num:Int, ids:Tuple<Int>) -> True|False :
   label<True|False> return :
@@ -199,122 +203,122 @@ defn setup-read-params (port-num:Int, groupread-num:Int, ids:Tuple<Int>) -> True
       ; Add parameter storage for present position value
       val dxl-addparam-result = group-sync-read-add-param(groupread-num, id)
       if dxl-addparam-result != 1 :
-        println("[ID:%_] groupSyncRead addparam failed" % [id])
+        throw(DynamixelError("[ID:%_] groupSyncRead addparam failed" % [id]))
         return(false)
     true
 
-defn write-goal-positions (port-num:Int, groupwrite-num:Int, ids:Tuple<Int>, goal-positions:Tuple<Int>) -> True|False :
-  label<True|False> return :
-    for (id in ids, pos in goal-positions) do :
-      ; Add goal position value to the Syncwrite storage
-      val dxl-addparam-result = group-sync-write-add-param(groupwrite-num, id, pos, LEN-PRO-GOAL-POSITION)
-      if dxl-addparam-result != 1 :
-        println("[ID:%_] groupSyncWrite addparam failed" % [id])
-        return(false)
+defn write-goal-positions (port-num:Int, groupwrite-num:Int, ids:Tuple<Int>, goal-positions:Tuple<Int>) :
+  for (id in ids, pos in goal-positions) do :
+    ; Add goal position value to the Syncwrite storage
+    val dxl-addparam-result = group-sync-write-add-param(groupwrite-num, id, pos, LEN-PRO-GOAL-POSITION)
+    if dxl-addparam-result != 1 :
+      throw(DynamixelError("[ID:%_] groupSyncWrite addparam failed" % [id]))
 
-    ; Syncwrite goal position
-    group-sync-write-tx-packet(groupwrite-num)
-    val dxl-comm-result = get-last-tx-rx-result(port-num)
-    if dxl-comm-result != COMM-SUCCESS :
-      println("%_" % [get-tx-rx-result(dxl-comm-result)])
+  ; Syncwrite goal position
+  group-sync-write-tx-packet(groupwrite-num)
+  val dxl-comm-result = get-last-tx-rx-result(port-num)
+  if dxl-comm-result != COMM-SUCCESS :
+    throw(DynamixelError(get-tx-rx-result(dxl-comm-result)))
 
-    ; Clear syncwrite parameter storage
-    group-sync-write-clear-param(groupwrite-num)
-    return(true)
+  ; Clear syncwrite parameter storage
+  group-sync-write-clear-param(groupwrite-num)
 
-defn read-present-positions (port-num:Int, groupread-num:Int, ids:Tuple<Int>, present-positions:Array<Int>) -> True|False:
-  label<True|False> return :
-    ; Syncread present position
-    group-sync-read-tx-rx-packet(groupread-num)
-    val dxl-comm-result = get-last-tx-rx-result(port-num)
-    if dxl-comm-result != COMM-SUCCESS :
-      println("%_" % [get-tx-rx-result(dxl-comm-result)])
+defn read-present-positions (port-num:Int, groupread-num:Int, ids:Tuple<Int>, present-positions:Array<Int>) :
+  ; Syncread present position
+  group-sync-read-tx-rx-packet(groupread-num)
+  val dxl-comm-result = get-last-tx-rx-result(port-num)
+  if dxl-comm-result != COMM-SUCCESS :
+    throw(DynamixelError(get-tx-rx-result(dxl-comm-result)))
 
-    for id in ids do :
-      ; Check if groupsyncread data of Dynamixel#1 is available
-      val dxl-getdata-result = group-sync-read-is-available(groupread-num, id, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
-      if dxl-getdata-result != 1 :
-        println("[ID:%_] groupSyncRead getdata failed" % [id])
-        return(false)
+  for id in ids do :
+    ; Check if groupsyncread data of Dynamixel#1 is available
+    val dxl-getdata-result = group-sync-read-is-available(groupread-num, id, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
+    if dxl-getdata-result != 1 :
+      throw(DynamixelError("[ID:%_] groupSyncRead getdata failed" % [id]))
 
-    for id in ids do :
-      ; Get Dynamixel present position value
-      present-positions[id] = group-sync-read-get-data(groupread-num, id, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
-
-    true
-
-defn servo-goal-positions
-    (port-num:Int, groupread-num:Int, groupwrite-num:Int, ids:Tuple<Int>, goal-positions:Tuple<Int>, present-positions:Array<Int>) -> True|False :
-  label<True|False> return :
-    if write-goal-positions(port-num, groupwrite-num, ids, goal-positions) == 1 :
-      let loop () :
-        if read-present-positions(port-num, groupread-num, ids, present-positions) == 0 :
-          return(false)
-        var is-moving:True|False = false
-        for (id in ids, pos in goal-positions) do :
-          println("[ID:%_] GoalPos:%_  PresPos:%_\t" % [id, pos, present-positions[id]])
-          is-moving = is-moving or (abs(pos - present-positions[id]) > DXL-MOVING-STATUS-THRESHOLD)
-        println("")
-        loop() when is-moving
-      true
+  for id in ids do :
+    ; Get Dynamixel present position value
+    present-positions[id] = group-sync-read-get-data(groupread-num, id, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
 
 val ESC-ASCII-VALUE = to-char(0x1b)
 
+public defstruct Dynamixel :
+  port-num : Int
+  ids : Tuple<Int>
+  groupwrite-num : Int
+  groupread-num : Int  
+  present-positions with: (init => Array<Int>(256))
+
+
+public defn Dynamixel (device-name:String, ids:Tuple<Int>) -> Dynamixel :
+  ; Initialize PortHandler Structs
+  ; Set the port path
+  ; Get methods and members of PortHandlerLinux or PortHandlerWindows
+  val port-num = port-handler(DEVICENAME)
+
+  ; Initialize PacketHandler Structs
+  packet-handler()
+
+  ; Initialize Groupsyncwrite Structs
+  val groupwrite-num = group-sync-write(port-num, ADDR-PRO-GOAL-POSITION, LEN-PRO-GOAL-POSITION)
+
+  ; Initialize Groupsyncread Structs for Present Position
+  val groupread-num = group-sync-read(port-num, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
+
+  ; Open port
+  if open-port(port-num) :
+    println("Succeeded to open the port!")
+  else :
+    throw(DynamixelError("Failed to open the port!"))
+
+  ; Set port baudrate
+  if set-baud-rate(port-num, BAUDRATE) :
+    println("Succeeded to change the baudrate!")
+  else :
+    throw(DynamixelError("Failed to change the baudrate!"))
+
+  setup-read-params(port-num, groupread-num, ids)
+
+  Dynamixel(port-num, ids, groupwrite-num, groupread-num)
+  
+public defn enable-torques (d:Dynamixel) :
+  enable-torques(port-num(d), ids(d))
+
+public defn disable-torques (d:Dynamixel) :
+  disable-torques(port-num(d), ids(d))
+
+public defn servo-goal-positions (d:Dynamixel, goal-positions:Tuple<Int>)  :
+  write-goal-positions(port-num(d), groupwrite-num(d), ids(d), goal-positions)
+  let loop () :
+    read-present-positions(port-num(d), groupread-num(d), ids(d), present-positions(d))
+    var is-moving:True|False = false
+    for (id in ids(d), pos in goal-positions) do :
+      println("[ID:%_] GoalPos:%_  PresPos:%_\t" % [id, pos, present-positions(d)[id]])
+      is-moving = is-moving or (abs(pos - present-positions(d)[id]) > DXL-MOVING-STATUS-THRESHOLD)
+    println("")
+    loop() when is-moving
+
+public defn shutdown (d:Dynamixel) :
+  disable-torques(d)
+  close-port(port-num(d))
+  
 defn main () :
-  label<Int> return :
-    ; Initialize PortHandler Structs
-    ; Set the port path
-    ; Get methods and members of PortHandlerLinux or PortHandlerWindows
-    val port-num = port-handler(DEVICENAME)
+  val ids = to-tuple $ (LO-ID through HI-ID)
+  val goal-positions = [ (DXL-MINIMUM-POSITION-VALUE + DXL-MAXIMUM-POSITION-VALUE) / 2 ]
+  val goal-positionz = to-tuple $ for pos in goal-positions seq : to-tuple $ repeatedly({ pos }, length(ids))
+  var index:Int = 0
 
-    ; Initialize PacketHandler Structs
-    packet-handler()
+  val d = Dynamixel(DEVICENAME, ids)
 
-    ; Initialize Groupsyncwrite Structs
-    val groupwrite-num = group-sync-write(port-num, ADDR-PRO-GOAL-POSITION, LEN-PRO-GOAL-POSITION)
+  enable-torques(d)
 
-    ; Initialize Groupsyncread Structs for Present Position
-    val groupread-num = group-sync-read(port-num, ADDR-PRO-PRESENT-POSITION, LEN-PRO-PRESENT-POSITION)
+  let loop () :
+    println("Press any key to continue! (or press ESC to quit!)")
+    if get-char(STANDARD-INPUT-STREAM) != ESC-ASCII-VALUE :
+      servo-goal-positions(d, goal-positionz[index])
+      index = (index + 1) % length(goal-positionz)
+      loop()
 
-    var index:Int = 0
-    ; val dxl-goal-position = [ DXL-AVERAGE-POSITION-VALUE ]  ; Goal position
-    val goal-positions = [ DXL-MINIMUM-POSITION-VALUE, DXL-MAXIMUM-POSITION-VALUE ]
-
-    ; Open port
-    if open-port(port-num) :
-      println("Succeeded to open the port!")
-    else :
-      println("Failed to open the port!\n")
-      println("Press any key to terminate...\n")
-      return(0)
-
-    ; Set port baudrate
-    if set-baud-rate(port-num, BAUDRATE) :
-      println("Succeeded to change the baudrate!")
-    else :
-      println("Failed to change the baudrate!\n")
-      println("Press any key to terminate...\n")
-      return(0)
-
-    val ids = to-tuple $ (LO-ID through HI-ID)
-    val goal-positionz = to-tuple $ for pos in goal-positions seq : to-tuple $ repeatedly({ pos }, length(ids))
-
-    enable-torques(port-num, ids)
-
-    if not setup-read-params(port-num, groupread-num, ids) :
-      return(0)
-
-    val present-positions = Array<Int>(256)
-
-    let loop () :
-      println("Press any key to continue! (or press ESC to quit!)")
-      if get-char(STANDARD-INPUT-STREAM) != ESC-ASCII-VALUE :
-        if servo-goal-positions(port-num, groupread-num, groupwrite-num, ids, goal-positionz[index], present-positions) :
-          index = (index + 1) % length(goal-positionz)
-          loop()
-
-    disable-torques(port-num, ids)
-    close-port(port-num)
-    1
+  shutdown(d)
 
 main()

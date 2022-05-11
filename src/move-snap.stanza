@@ -1,0 +1,21 @@
+defpackage move-snap :
+  import core
+  import math
+  import collections
+  import dynamixel
+  import sony-camera-remote
+
+public defn playback (ids:Tuple<Int>, positionz:Seqable<Tuple<Int>>) :
+  val c = open-sony-remote()
+  val d = Dynamixel(DEVICENAME, ids)
+
+  enable-torques(d)
+
+  for positions in positionz do :
+    servo-goal-positions(d, positions)
+    snap-sony-remote()
+    sleep(1.0f)
+    
+  close-sony-remote()
+  shutdown(d)
+

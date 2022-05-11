@@ -18,8 +18,7 @@ public lostanza defn close-sony-remote () -> ref<False> :
   call-c close_sony_remote()
   return false  
 
-defn main () :
-  println("HELLO")
-
-main()
+; defn main () :
+;   println("HELLO")
+; main()
   
