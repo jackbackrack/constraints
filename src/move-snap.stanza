@@ -7,15 +7,23 @@ defpackage move-snap :
 
 public defn playback (ids:Tuple<Int>, positionz:Seqable<Tuple<Int>>) :
   val c = open-sony-remote()
-  val d = Dynamixel(DEVICENAME, ids)
+  val d = Dynamixel(ids)
 
   enable-torques(d)
 
   for positions in positionz do :
     servo-goal-positions(d, positions)
     snap-sony-remote()
-    sleep(1.0f)
+    sleep-us(1000000L)
     
   close-sony-remote()
   shutdown(d)
 
+defn main () :
+  val lo = 0
+  val hi = 4095
+  defn angle-to-value (x:Float) -> Int :
+    min(hi, max(lo, to-int(round((to-float(hi) * (x + 180.0f) / 360.0f) + to-float(lo)))))
+  playback([13], seq({ [ angle-to-value(_) ] }, [-45.0f, 0.0f, 45.0f, 0.0f, -45.0f, -30.0f, -15.0f, 0.0f]))
+
+main()

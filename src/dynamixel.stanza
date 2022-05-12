@@ -250,7 +250,7 @@ public defstruct Dynamixel :
   present-positions with: (init => Array<Int>(256))
 
 
-public defn Dynamixel (device-name:String, ids:Tuple<Int>) -> Dynamixel :
+public defn Dynamixel (ids:Tuple<Int>) -> Dynamixel :
   ; Initialize PortHandler Structs
   ; Set the port path
   ; Get methods and members of PortHandlerLinux or PortHandlerWindows
@@ -308,7 +308,7 @@ defn main () :
   val goal-positionz = to-tuple $ for pos in goal-positions seq : to-tuple $ repeatedly({ pos }, length(ids))
   var index:Int = 0
 
-  val d = Dynamixel(DEVICENAME, ids)
+  val d = Dynamixel(ids)
 
   enable-torques(d)
 
@@ -321,4 +321,4 @@ defn main () :
 
   shutdown(d)
 
-main()
+; main()

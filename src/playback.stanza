@@ -1,18 +1,31 @@
 defpackage playback :
   import core
+  import math
   import collections
+  import geom/box
+
+defstruct Joint :
+  id : Int
+  name : Symbol
+  factor : Float
+  offset : Float
 
 defn main () :
-  val filename = "abc.txt"
+  val filename = "logs/abc.txt"
+  val base-id = 10
   val lines = to-seq $ split(slurp(filename), "\n")
   val num = to-int!(next(lines))
-  val joint-names = Array<Symbol>(num)
-  val joint-flipped? = Array<True|False>(num)
+  val joints = Array<Joint>(num)
   for i in 0 to num do :
+    ; id name factor offset
     val elts = to-tuple $ split(next(lines), " ")
-    joint-names[to-int!(elts[0])] = to-symbol(elts[1])
-    joint-flipped?[to-int!(elts[0])] = elts[2] == true
-  val anglez = Vector<Array<Float>>()
+    val id = to-int!(elts[0])
+    val name = to-symbol(elts[1])
+    val factor = to-float!(elts[2])
+    val offset = to-float!(elts[3])
+    joints[id] = Joint(id, name, factor, offset)
+  println("--- FLOAT-ANGLES")
+  val float-anglez = Vector<Array<Float>>()
   let loop () :
     if not empty?(lines) :
       val line = next(lines)
@@ -22,16 +35,21 @@ defn main () :
         for i in 0 to num do :
           val elts = to-tuple $ split(next(lines), " ")
           val [idx, angle] = [to-int!(elts[0]), to-float(elts[1]) as Float]
-          angles[idx] = (-1.0f when joint-flipped?[idx] else 1.0f) * angle
+          val joint = joints[idx]
+          angles[idx] = factor(joint) * angle + offset(joint)
         println(angles)
-        add(anglez, angles)
+        add(float-anglez, angles)
         loop()
-      
-  ; for line in lines do :
-  ;   val elts = split(line, " ")
-  ;   for elt in elts do :
-  ;     print("[ %_ ]" % [elt])
-  ;   println("")
+  println("--- INT-ANGLES")
+  val int-angle-range = Box1i(0, 4095)
+  val int-anglez = to-tuple $ for angles in float-anglez seq :
+    val int-angles = to-tuple $ for angle in angles seq :
+      val norm-float-angle = round(to-float(hi(int-angle-range)) * (angle + PI-F) / (2.0f * PI-F))
+      val int-angle = max(0, min(to-int(norm-float-angle), hi(int-angle-range)))
+      int-angle
+    println(int-angles)
+    int-angles
+  int-anglez
 
 main()
 

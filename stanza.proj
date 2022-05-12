@@ -26,6 +26,11 @@ build playback :
   pkg: "pkgs"
   o: "build/playback"
 
+build move-snap :
+  inputs: move-snap
+  pkg: "pkgs"
+  o: "build/move-snap"
+
 build constraints-app :
   inputs: constraints-app
   pkg: "pkgs"
