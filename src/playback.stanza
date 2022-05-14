@@ -3,6 +3,7 @@ defpackage playback :
   import math
   import collections
   import geom/box
+  import geom/angle
 
 defstruct Joint :
   id : Int
@@ -44,7 +45,8 @@ defn main () :
   val int-angle-range = Box1i(0, 4095)
   val int-anglez = to-tuple $ for angles in float-anglez seq :
     val int-angles = to-tuple $ for angle in angles seq :
-      val norm-float-angle = round(to-float(hi(int-angle-range)) * (angle + PI-F) / (2.0f * PI-F))
+      val radians = degrees-to-radians(angle)
+      val norm-float-angle = round(to-float(hi(int-angle-range)) * (radians + PI-F) / (2.0f * PI-F))
       val int-angle = max(0, min(to-int(norm-float-angle), hi(int-angle-range)))
       int-angle
     println(int-angles)

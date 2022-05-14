@@ -536,6 +536,33 @@ public defn Circle (id:Symbol, center:Vertex, radius:AnyVar, ref?:True|False, me
 public defn Circle (id:Symbol, center:Vertex, radius:AnyVar) -> Circle :
   Circle(id, center, radius, false, false)
 
+public defstruct Sphere <: Entity :
+  id : Symbol with: (as-method => true)
+  center : Vertex
+  radius : AnyVar
+  ref? : True|False
+  measure? : True|False
+  color : V3f with: (default => xyz(1.0f), setter => set-color)
+with:
+  constructor => #Sphere
+  printer => true
+
+defmethod copy (s:Sphere, new-root-id:Symbol, copied:HashTable<Symbol,Entity>) -> Sphere :
+  defn do-copy () :
+    #Sphere(replace-root-id(id(s), new-root-id),
+            copy(center(s), new-root-id, copied)
+            copy(radius(s), new-root-id, copied)
+            ref?(s),
+            measure?(s),
+            color(s))
+  set?(copied, id(s), do-copy) as Sphere
+
+public defn Sphere (id:Symbol, center:Vertex, radius:AnyVar, ref?:True|False, measure?:True|False) -> Sphere :
+  #Sphere(symbol-join([PREFIX id]), center, radius, ref?, measure?)
+
+public defn Sphere (id:Symbol, center:Vertex, radius:AnyVar) -> Sphere :
+  Sphere(id, center, radius, false, false)
+
 public defstruct Plane <: Entity :
   id : Symbol with: (as-method => true)
   center : Vertex
@@ -640,6 +667,7 @@ public defn MixCost (value:Exp) -> MixCost : MixCost(`dummy, value)
 public deftype Module <: Entity
 public defmulti entities (m:Module) -> Tuple<Entity>
 public defmulti sub-entities (m:Module, es:Tuple<Entity>)
+public defmulti children (m:Module) -> Tuple<Module> : []
 public defmulti cost (m:Module) -> Exp
 public defmulti sub-cost (m:Module, c:Exp)
 public defmulti mix-costs (m:Module) -> Tuple<MixCost>
@@ -704,6 +732,7 @@ public deftype Scheduler
 public defmulti state (s:Scheduler) -> SchedulerState
 public defmulti body (s:Scheduler) -> Body
 public defmulti schedule (s:Scheduler) -> Seq<Phrase>
+public defmulti exec (s:Scheduler) -> ? : false
 
 public defn t (s:Scheduler) -> Float : t(state(s))
 public defn start-t (s:Scheduler) -> Float : start-t(state(s))
@@ -746,6 +775,9 @@ public defn all-entities (m:Module) -> Seqable<Entity> :
         (e:Module) : do(yield, all-entities(e))
         (e:Entity) : yield(e)
 
+public defn all-children (m:Module) -> Seqable<Module> :
+  cat([ m ], seq-cat(all-children, children(m)))
+
 public defn all-vertices (m:Module) -> Seqable<Vertex> :
   filter-by<Vertex>(all-entities(m))
 
@@ -783,6 +815,9 @@ defmethod vars (v:Vertex) -> Tuple<AnyVar> :
 
 defmethod vars (c:Circle) -> Seq<AnyVar> :
   cat([radius(c)], vars(center(c)))
+
+defmethod vars (s:Sphere) -> Seq<AnyVar> :
+  cat([radius(s)], vars(center(s)))
 
 defmethod vars (p:Plane) -> Seq<AnyVar> :
   cat(vars(center(p)), vars(normal(p)))
@@ -2063,6 +2098,7 @@ public defstruct BindBody <: Module :
   entities : Tuple<Entity> with: (as-method => true)
   cost : Exp with: (as-method => true)
   mix-costs : Tuple<MixCost> with: (as-method => true)
+  children : Tuple<Module> with: (as-method => true, init => [ mod ])
 
 public defn pulse (x:Exp, s:Exp, e:Exp) -> Exp :
   threshold(x, s) * (Const(1.0f) - threshold(x, e))

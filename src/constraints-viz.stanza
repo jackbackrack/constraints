@@ -101,6 +101,25 @@ defmethod draw (c:Circle, size:Float) :
   draw-circle(x(radius(c)), 64)
   gl-pop-matrix()
 
+defmethod draw (s:Sphere, size:Float) :
+  ; color-of(ref?(s))
+  gl-color(color(s))
+  gl-push-matrix()
+  gl-translate(pos(center(s)))
+  gl-begin(GL-POINTS)
+  gl-vertex(V3f(0.0f, 0.0f, 0.0f))
+  gl-end()
+  draw-circle(x(radius(s)), 64)
+  gl-push-matrix()
+  gl-rotatef(90.0f, 1.0f, 0.0f, 0.0f)
+  draw-circle(x(radius(s)), 64)
+  gl-pop-matrix()
+  gl-push-matrix()
+  gl-rotatef(90.0f, 0.0f, 1.0f, 0.0f)
+  draw-circle(x(radius(s)), 64)
+  gl-pop-matrix()
+  gl-pop-matrix()
+
 defmethod draw (c:PolyLinePath, size:Float) :
   draw(point(c), size)
 
@@ -293,7 +312,9 @@ defmethod step (v:ConstraintsViz, real-delta:Float, w:Float, h:Float) -> False :
       clear(b)
       apply(b)
       update(b)
+    exec(s)
     stop(timer)
+
     match(dumper(v)) :
       (f:FileOutputStream) :
         if tick(s) == 1 :
@@ -305,7 +326,7 @@ defmethod step (v:ConstraintsViz, real-delta:Float, w:Float, h:Float) -> False :
         println(f, tick(s) - 1)
         for sv in symvars(b) do :
           if dx-update?(sv) :
-            println(f, "%_ %_" % [idx(sv), x(sv)])
+            println(f, "%_ %_" % [idx(sv), radians-to-degrees(x(sv))])
         flush(f)
       (f) : false
     

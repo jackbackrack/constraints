@@ -212,6 +212,7 @@ defn mov-y-mat-exp (del:Exp) -> MatExp :
 
 defstruct LinkExp <: Entity :
   id : Symbol with: (as-method => true)
+  idx : Int
   len : Float
   edge : Edge         ; points to two 
   axis : Int
@@ -223,6 +224,7 @@ defstruct LinkExp <: Entity :
   joint-mass : Float
   link-mass : Float
   link-parents : Tuple<LinkExp>
+  mid-vertices : Tuple<Vertex>
   torque : ExpVar
 with:
   printer => true
@@ -340,17 +342,25 @@ defn init-edges (id:Symbol, spec:KinematicsExpSpec, vertices:HashTable<Symbol,Ve
         val to-vertex = Vertex(to-vertex-name, to-global-mat * Const(V3f(0.0f, 0.0f, 0.0f)))
         vertices[to-vertex-name] = to-vertex
 
-        if len(to-link-spec) > mid-threshold(spec) :
-          val mid-vertex-name = symbol-join $ [name(from-vertex), "-mid-", name(to-vertex)]
-          val mid-vertex = Vertex(mid-vertex-name, Const(0.5f) * (exp(from-vertex) + exp(to-vertex)))
-          mid-vertices[mid-vertex-name] = mid-vertex
+        val mid-verts =
+          if len(to-link-spec) > mid-threshold(spec) :
+            val num = 2
+            to-tuple $ for i in 0 to num seq :
+              val mid-vertex-name = symbol-join $ [name(from-vertex), "-mid", i, "-" name(to-vertex) ]
+              val off = to-float(i + 1) / to-float(num + 1)
+              val mid-vertex = Vertex(mid-vertex-name, Const(off) * exp(from-vertex) + Const(1.0f - off) * exp(to-vertex))
+              mid-vertices[mid-vertex-name] = mid-vertex
+              mid-vertex
+          else :
+            []
 
         val edge = Edge(to-link-name, from-vertex, to-vertex)
         val parents = to-tuple $ loop(to-link-name, to-vertex, to-global-mat)
         val torque = calc-torque(link-exps, v0(edge), parents)
-        val to-link-exp = LinkExp(to-link-name, len(to-link-spec), edge, axis, angle, limits, pose, to-global-mat-vars,
+        val to-link-exp = LinkExp(to-link-name, length(link-exps), len(to-link-spec), edge, axis, angle, limits, pose, to-global-mat-vars,
                                   joint-mass, mass(to-link-spec),
                                   to-tuple $ seq({ link-exps[ _ ] }, parents),
+                                  mid-verts, 
                                   ExpVar(symbol-join([to-vertex-name, "-torque"]), torque)) ; to-local-mat, 
         link-exps[to-link-name] = to-link-exp
         cat([to-link-name], parents)
@@ -366,15 +376,48 @@ defn init-edges (id:Symbol, spec:KinematicsExpSpec, vertices:HashTable<Symbol,Ve
   ; println(to-tuple $ link-exps)
   link-exps
 
+defn vertex-to-sphere-name (n:Symbol) -> Symbol :
+  symbol-join $ [n, "-sphere"]
+defn vertex-to-sphere-name (v:Vertex) : vertex-to-sphere-name(id(v))
+  
+
+defn vertex-collision-excludes (links:Tuple<LinkExp>) -> HashTable<Symbol,List<Symbol>> :
+  val excludes = HashTable<Symbol,List<Symbol>>(List())
+  val nbr-links =
+    to-hashtable<Symbol,Tuple<LinkExp>> $ for l1 in links seq : id(l1) =>
+      to-tuple $ for l2 in links seq-cat :
+        [ l2 ] when (abs(idx(l2) - idx(l1)) < 2) else []
+  for l1 in links do :
+    println("  LINK1 %_ %_" % [id(l1), idx(l1)])
+    for l2 in nbr-links[id(l1)] do :
+      println("    LINK2 %_ %_" % [id(l2), idx(l2)])
+      defn verts-of (l:LinkExp) : cat-all $ [[ v0(edge(l)) ] [ v1(edge(l)) ], mid-vertices(l) ]
+      defn unique-cons (a:Symbol, l:List<Symbol>) :
+        l when contains?(l, a) else cons(a, l)
+      for v1 in verts-of(l1) do :
+        for v2 in verts-of(l2) do :
+          excludes[id(v1)] = unique-cons(id(v2), excludes[id(v1)])
+          excludes[id(v2)] = unique-cons(id(v1), excludes[id(v2)])
+
+  val num-excludes = length $ to-tuple $ for exc in values(excludes) seq-cat : exc
+  println("TOT EXCLUDES %_" % [num-excludes])
+  excludes
+
 defstruct KinematicsExpBody <: Module :
   id : Symbol with: (as-method => true)
   specs : KinematicsExpSpec
+  sphere-radius : ExpVar with: (init => ExpVar(symbol-join $ [id, "-sphere-radius"], Const(3.0f)))
   mid-vertex-table : HashTable<Symbol,Vertex> with: (init => HashTable<Symbol,Vertex>())
   vertex-table : HashTable<Symbol,Vertex> with: (init => HashTable<Symbol,Vertex>())
   link-table : HashTable<Symbol,LinkExp> with: (init => init-edges(id, specs, vertex-table, mid-vertex-table))
-  entities : Tuple<Entity> with: (as-method => true, init =>
-    to-tuple $ cat-all $ [values(vertex-table), values(mid-vertex-table), for l in values(link-table) seq-cat : [l, angle(l), edge(l), global-mat(l)]])
+  spheres : Tuple<Sphere> with: (init =>
+    to-tuple $ for v in cat(values(vertex-table), values(mid-vertex-table)) seq :
+                 Sphere(vertex-to-sphere-name(v), v, sphere-radius))
+  entities : Tuple<Entity> with: (as-method => true, init => 
+    to-tuple $ cat-all $ [values(vertex-table), values(mid-vertex-table), spheres
+                          for l in values(link-table) seq-cat : [l, angle(l), edge(l), global-mat(l)]])
   cost : Exp with: (as-method => true, init => Const(0.0f))
+  vertex-collision-excludes : HashTable<Symbol,List<Symbol>> with: (init => vertex-collision-excludes(to-tuple $ values(link-table)))
 
 defstruct KinematicsExpBody2 <: Module :
   id : Symbol with: (as-method => true)
@@ -456,11 +499,11 @@ defn basing (m:KinematicsExpBody, origin:Float) -> Exp :
   Const(10.0f) * SameVecConstraint([exp(vertex-table(m)[root(specs(m))]) Const(V3f(0.0f, origin, 0.0f))])
 
 defn repel (v1:Vec3Exp, v2:Vec3Exp, d:Exp) -> Exp :
-  val x = distance2(v1, v2)
-  d / x
+  ; val x = distance2(v1, v2)
+  ; d / x
   ; d * exp(Const(-1.0f) * x)
-  ; val x = distance(v1, v2)
-  ; d / pow(x - Const(3.0f), Const(2.0f))
+  val x = distance(v1, v2)
+  d / pow(x - Const(6.0f), Const(2.0f))
 
 defn repel (v1:Vertex, v2:Vertex, d:Exp) -> Exp :
   repel(exp(v1), exp(v2), d)
@@ -486,13 +529,19 @@ defn TimeExpKinematicsSimplePath (name:Symbol, time:SymVar, spec:KinematicsExpSp
   TimeExpKinematics(name, time, spec, [ path ],
     fn (m, verts) : [ MixCost(name, `path, SameConstraint(exp(verts[tip]), exp(point(path)))) ])
 
-defn all-repels (name:Symbol, verts:HashTable<Symbol, Vertex>) -> Seqable<MixCost> :
+defn all-repels (name:Symbol, verts:HashTable<Symbol, Vertex>, vertex-collision-excludes:HashTable<Symbol,List<Symbol>>) -> Seqable<MixCost> :
   if top-collision-detection? :
     val vert-names = to-tuple $ keys(verts)
-    println(vert-names)
+    println("%_ VERTS %_" % [length(vert-names), vert-names])
+    var num:Int = 0
     val tot = sum $ for i in 0 to length(verts) seq-cat :
-      for j in (i + 1) to length(verts) seq :
-        repel(verts[vert-names[i]], verts[vert-names[j]], Const(100.0f))
+      for j in (i + 1) to length(verts) seq-cat :
+        if contains?(vertex-collision-excludes[vert-names[i]], vert-names[j]) :
+          []
+        else :
+          num = num + 1
+          [ repel(verts[vert-names[i]], verts[vert-names[j]], Const(100.0f)) ]
+    println("NUM-REPELS = %_" % [num])
     [ MixCost(name, `repel, tot) ]
   else :
     []
@@ -524,9 +573,20 @@ defn TimeExpKinematicsTwoPaths (name:Symbol, radius:Float, time:SymVar, spec:Kin
         MixCost(name, `left-path,  SameConstraint(exp(verts[left-tip]),  exp(point(left-path))))
         MixCost(name, `right-path, SameConstraint(exp(verts[right-tip]), exp(point(right-path))))
         ]
-        all-repels(name, verts)
+        all-repels(name, verts, vertex-collision-excludes(m))
       ]
 )
+
+defn test-joint (test-idx:Int, links:Seqable<LinkExp>) -> Exp :
+  println("IDX %_" % [idx])
+  sum $ for (link in links) seq-cat :
+    val ang = angle(link)
+    if dx-update?(ang) :
+      val a = Const(PI-F / 8.0f) when (idx(ang) == test-idx) else Const(0.0f)
+      println("  I %_ %_ A %_" % [idx(ang), id(ang), a])
+      [ SameConstraint(exp(ang), a) ]
+    else :
+      []
 
 defn all-gyrations (ts:Seqable<Exp>, links:Tuple<LinkExp>) -> Exp :
   sum $ for (link in links, t in ts, i in 0 to false) seq :
@@ -581,7 +641,7 @@ defn DOF (name:Symbol, time:SymVar, spec:KinematicsExpSpec,
         MixCost(name, `rnd-gyrate, rnd-gyrations(gyration-time(2.0f), links))
         MixCost(name, `inc-gyrate, inc-gyrations(gyration-time(3.0f), links))
         ]
-        all-repels(name, verts)
+        all-repels(name, verts, vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathFall
@@ -596,7 +656,7 @@ defn TimeExpKinematicsPathFall
       MixCost(name, `limit, limit-angles(m)),
       MixCost(name, `fall, 0.1f, fall(m, joints, -8.0f))
       MixCost(name, `above, 10.0f, above(m, all-joints, -8.0f)) ]
-      all-repels(name, joint-verts)
+      all-repels(name, joint-verts, vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathGyrate
@@ -620,9 +680,14 @@ defn TimeExpKinematicsPathGyrate
       MixCost(name, `centering, centering(m, CenterConstraint, Const(V3f(0.0f, 0.0f, 0.0f)))),
       MixCost(name, `limit, limit-angles(m)),
       MixCost(name, `above, 10.0f, above(m, all-joints, -8.0f)) ]
-      all-repels(name, joint-verts)
+      all-repels(name, joint-verts, vertex-collision-excludes(m))
       all-gyrations(name, ts, values(link-table(m)))
       ])
+
+defn TimeExpKinematicsTestJoint
+    (name:Symbol, idx:Int, time:SymVar, spec:KinematicsExpSpec) -> BindBody :
+  TimeExpKinematics(name, time, spec, [ time ], fn (m, verts) :
+    [ MixCost(name, `test, test-joint(idx, values(link-table(m)))) ])
 
 defn TimeExpKinematicsPathCuffed
     (name:Symbol, radius:Float, param:Float, time:SymVar, spec:KinematicsExpSpec,
@@ -640,7 +705,7 @@ defn TimeExpKinematicsPathCuffed
       MixCost(name, `touch, DistanceConstraint(exp(verts[left-tip]), exp(verts[right-tip]), exp(target)))
       MixCost(name, `path, SameConstraint(exp(verts[mid]), exp(point(path))))
       MixCost(name, `above, 10.0f, above(m, joints, -8.0f)) ]
-      all-repels(name, verts)
+      all-repels(name, verts, vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathTied
@@ -659,7 +724,7 @@ defn TimeExpKinematicsPathTied
       MixCost(name, `touch, DistanceConstraint(verts[left-tip], verts[knee], Const(2.0f)))
       MixCost(name, `touch, DistanceConstraint(verts[right-tip], verts[knee], Const(2.0f)))
       MixCost(name, `path, SameConstraint(exp(verts[mid]), exp(point(path)))) ]
-      all-repels(name, verts)
+      all-repels(name, verts, vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathGrounded
@@ -680,7 +745,7 @@ defn TimeExpKinematicsPathGrounded
       MixCost(name, `limit, limit-angles(m)),
       MixCost(name, `above, 10.0f, above(m, joints, -8.0f))
       ]
-      all-repels(name, verts)
+      all-repels(name, verts, vertex-collision-excludes(m))
       ])
 
 defn merge (a:HashTable<Symbol,Vertex>, b:HashTable<Symbol,Vertex>) -> HashTable<Symbol,Vertex> :
@@ -704,7 +769,7 @@ defn TimeExpKinematicsPathCenter
       MixCost(name, `limit, limit-angles(m)),
       MixCost(name, `path, SameConstraint(exp(verts[left-tip]), exp(point(path))))
       ]
-      all-repels(name, merge(verts, mid-vertex-table(m)))
+      all-repels(name, merge(verts, mid-vertex-table(m)), vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathCenterStraighten
@@ -731,7 +796,7 @@ defn TimeExpKinematicsPathCenterStraighten
       MixCost(name, `right-path, SameConstraint(exp(verts[right-tip]), exp(point(right-path)))) ]
       ; for j in right-joints seq :
       ;   MixCost(name, symbol-join([`touch "/" j]), SameConstraint(exp(verts[left-tip]), exp(verts[j])))
-      all-repels(name, verts)
+      all-repels(name, verts, vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathCenterBase (name:Symbol, radius:Float, target:Float, time:SymVar, spec:KinematicsExpSpec, path:Path, left-tip:Symbol, right-tip:Symbol) -> BindBody :
@@ -743,7 +808,7 @@ defn TimeExpKinematicsPathCenterBase (name:Symbol, radius:Float, target:Float, t
       ; MixCost(name, `base, SameConstraint(exp(y(verts[right-tip])), Const(target)))
       ; MixCost(name, `sphere, DistanceConstraint(exp(verts[right-tip]), c, Const(target)))
       MixCost(name, `path, SameConstraint(exp(verts[left-tip]), exp(point(path)))) ]
-      all-repels(name, verts)
+      all-repels(name, verts, vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathBind (name:Symbol, target:Float, time:SymVar, spec:KinematicsExpSpec, path:Path, left-tip:Symbol, right-tip:Symbol) -> BindBody :
@@ -755,7 +820,7 @@ defn TimeExpKinematicsPathBind (name:Symbol, target:Float, time:SymVar, spec:Kin
       ; MixCost(name, `base, SameConstraint(exp(y(verts[right-tip])), Const(target)))
       MixCost(name, `sphere, DistanceConstraint(exp(verts[right-tip]), exp(verts[left-tip]), Const(target)))
       MixCost(name, `path, SameConstraint(exp(verts[left-tip]), exp(point(path)))) ]
-      all-repels(name, verts)
+      all-repels(name, verts, vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathTrace (name:Symbol, target:Float, time:SymVar, spec:KinematicsExpSpec, path:Path, left-tip:Symbol, right-tip:Symbol) -> BindBody :
@@ -769,7 +834,7 @@ defn TimeExpKinematicsPathTrace (name:Symbol, target:Float, time:SymVar, spec:Ki
       MixCost(name, `limit, limit-angles(m)),
       ; MixCost(name, `sphere, DistanceConstraint(exp(verts[right-tip]), c, Const(target)))
       MixCost(name, `path, SameConstraint(exp(verts[left-tip]), exp(point(path)))) ]
-      all-repels(name, verts)
+      all-repels(name, verts, vertex-collision-excludes(m))
       ])
 
 defn TimeExpKinematicsPathSphere (name:Symbol, radius:Float, time:SymVar, spec:KinematicsExpSpec, path:Path, tip:Symbol, left-tip:Symbol, right-tip:Symbol) -> BindBody :
@@ -1066,15 +1131,16 @@ defn nameit (side:Symbol, kind:Symbol, idx:Int) :
 ;       ] )
 
 val hip-ang = 1.0f * PI-F
-val equilateral-triangle-inscribed-radius = (sqrt(3.0f) / 2.0f) * 2.85f
-val first-link-len = 3.4f + equilateral-triangle-inscribed-radius
+; val equilateral-triangle-inscribed-radius = (sqrt(3.0f) / 2.0f) * 2.85f
+; val first-link-len = 3.4f + equilateral-triangle-inscribed-radius
+val first-link-len = 4.7f
 val robot-simple-body-exp-spec5 =
   KinematicsExpSpec(`bottom-j6,
   ; KinematicsExpSpec(`bottom-j5,
     cat-all $ [
-      robot-arm5(nameit{`left, _, _},   [first-link-len, 3.8f, 15.0f, 15.0f], [1, 2, 2])
-      robot-arm5(nameit{`right, _, _},  [first-link-len, 3.8f, 15.0f, 15.0f], [1, 2, 2])
-      robot-arm5(nameit{`bottom, _, _}, [first-link-len, 3.8f, 15.0f, 15.0f, 3.8f, 3.4f], [1, 2, 2, 2, 1])
+      robot-arm5(nameit{`left, _, _},   [first-link-len, 4.3f, 15.0f, 15.0f], [1, 2, 2])
+      robot-arm5(nameit{`right, _, _},  [first-link-len, 4.3f, 15.0f, 15.0f], [1, 2, 2])
+      robot-arm5(nameit{`bottom, _, _}, [first-link-len, 5.245f, 15.0f, 15.0f, 5.26f, 4.73f], [1, 2, 2, 2, 1])
       ; robot-arm5(nameit{`bottom, _, _}, [2.0f, 4.0f, 4.0f, 2.0f, 2.0f], [1, 2, 2, 1])
       [ JointExpSpec(`left-hip,  0.020f, 2, Box1f((- hip-ang)), `bottom-l0, `left-l0)
         JointExpSpec(`right-hip, 0.020f, 2, Box1f(   hip-ang ), `bottom-l0, `right-l0) ]
@@ -1128,13 +1194,14 @@ defn rem-costs (b:Body, new-costs:Seqable<Cost>) :
     println(name(c))
 
 public deftype DanceScheduler <: Scheduler
-defn DanceScheduler (b:Body, make-sched:Body -> Seq<Phrase>, x-0:Float, x-1:Float) -> DanceScheduler :
+defn DanceScheduler (b:Body, make-sched:Body -> Seq<Phrase>, x-0:Float, x-1:Float, exec : () -> ?) -> DanceScheduler :
   val state = SchedulerState()
   val sched = make-sched(b)
   new DanceScheduler :
     defmethod state (this) : state
     defmethod body (this) : b
     defmethod schedule (this) : sched
+    defmethod exec (this) : exec()
 
 defn simple-sched (b:Body) -> Seq<Phrase> :
   repeatedly({ Phrase(1.0f) })
@@ -1491,6 +1558,8 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float, x-2
         val bottom-joints = [`bottom-j5, `bottom-j4 `bottom-j3 `bottom-j2 `bottom-j1]
         TimeExpKinematicsPathGyrate(`main, x-0, x-2, time, robot-simple-body-exp-spec5,
           bottom-joints, left-joints, right-joints)
+      "test-joint" :
+        TimeExpKinematicsTestJoint(`main, n-0, time, robot-simple-body-exp-spec5)
       "time-dancer-rnd-orbit2" :
         val path = Orbit2Particle(`particle, time, y3f(x-1), x-0, x-1, 4.0f, 1.0f)
         val left-joints = [`left-j4, `left-j3, `left-j2, `left-j1]
@@ -1554,7 +1623,28 @@ defn demo (top-name:String, n-0:Int, n-1:Int, n-2:Int, x-0:Float, x-1:Float, x-2
 
   ; println("RUNNING MODULE...")
 
-  run-module(m, time, DanceScheduler{_, sched, x-0, x-1})  
+  ; for item in sphere-excludes do :
+  ;   println("%_ = %_" % [key(item), value(item)])
+
+  val mod = next(filter-by<KinematicsExpBody>(all-children(m)))
+
+  val sphere-excludes = to-hashtable<Symbol,Tuple<Symbol>> $ for item in vertex-collision-excludes(mod) seq :
+    vertex-to-sphere-name(key(item)) => to-tuple $ seq(vertex-to-sphere-name, value(item))
+  
+  defn collision-detection () :
+    for s in spheres(mod) do :
+      set-color(s, xyz(1.0f))
+    for s1 in spheres(mod) do :
+      ; println("  %_" % [id(s1)])
+      for s2 in spheres(mod) do :
+        if not contains?(sphere-excludes[id(s1)], id(s2)) :
+          val collides? = distance(pos(center(s1)), pos(center(s2))) < (2.0f * x(radius(s1)))
+          ; println("    %_ = %_" % [id(s2), collides?])
+          if collides? :
+            println("COLLIDE %_ %_" % [id(s1), id(s2)])
+            set-color(s1, x3f(1.0f))
+        
+  run-module(m, time, DanceScheduler{_, sched, x-0, x-1, collision-detection})  
 
 defn demo (top-name:String) :
   demo(top-name, top-n-0, top-n-1, top-n-2, top-x-0, top-x-1, top-x-2, top-x-3)
