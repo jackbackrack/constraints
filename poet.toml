@@ -1,5 +1,5 @@
 name = "constraints"
-version = "0.6.0"
+version = "0.7.0"
 [dependencies]
 stanza-utils = "jackbackrack/stanza-utils|0.1.1"
 stanza-geom = "jackbackrack/stanza-geom|0.1.2"
