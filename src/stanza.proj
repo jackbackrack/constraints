@@ -33,14 +33,15 @@ compile file "{WORKDIR}/build/solvespace.o" from "solvespace.cpp" :
 package solvespace-demo defined-in "solvespace-demo.stanza"
 
 package sony-camera-remote defined-in "sony-camera-remote.stanza"
-package sony-camera-remote requires :
-  ccfiles :
-    "{WORKDIR}/build/sony-camera-remote.o"
-  ccflags :
-    on-platform :
-      os-x  : ( "-lslvs" "-lc++") ; TODO
-      linux : ( "-lCr_Core" "-lsony-camera-remote" "-lstdc++fs" "-lstdc++")
-compile file "{WORKDIR}/build/sony-camera-remote.o" from "sony-camera-remote.cpp" :
-  "/usr/bin/c++ -O3 -I/usr/local/include/sony-camera-remote -I/usr/local/include/CRSDK/ -DNDEBUG -DUSE_EXPERIMENTAL_FS --std=c++17 -c {.}/sony-camera-remote.cpp -o {WORKDIR}/build/sony-camera-remote.o"
+; package sony-camera-remote requires :
+;   ccfiles :
+;     "{WORKDIR}/build/sony-camera-remote.o"
+;   ccflags :
+;     on-platform :
+;       os-x  : ( "-lslvs" "-lc++") ; TODO
+;       linux : ( "/home/jrb/Downloads/external/crsdk/libCr_Core.so" "/usr/local/lib/libsony-camera-remote.a" "-lstdc++fs" "-lstdc++")
+; ;      linux : ( "-lCr_Core" "/usr/local/lib/libsony-camera-remote.a" "-lstdc++fs" "-lstdc++")
+; compile file "{WORKDIR}/build/sony-camera-remote.o" from "sony-camera-remote.cpp" :
+;   "/usr/bin/c++ -O3 -I/usr/local/include/sony-camera-remote -I/usr/local/include/CRSDK/ -DNDEBUG -DUSE_EXPERIMENTAL_FS --std=c++17 -c {.}/sony-camera-remote.cpp -o {WORKDIR}/build/sony-camera-remote.o"
 
 package move-snap defined-in "move-snap.stanza"

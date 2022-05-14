@@ -1,22 +1,39 @@
 defpackage sony-camera-remote :
   import core
-  import collections
 
-extern close_sony_remote: () -> int
-extern open_sony_remote: () -> int
-extern snap_sony_remote: () -> int
+; extern close_sony_remote: () -> int
+; extern open_sony_remote: () -> int
+; extern snap_sony_remote: () -> int
+; 
+; public lostanza defn open-sony-remote () -> ref<False> :
+;   call-c open_sony_remote()
+;   return false  
+; 
+; public lostanza defn snap-sony-remote () -> ref<False> :
+;   call-c snap_sony_remote()
+;   return false  
+; 
+; public lostanza defn close-sony-remote () -> ref<False> :
+;   call-c close_sony_remote()
+;   return false  
 
-public lostanza defn open-sony-remote () -> ref<False> :
-  call-c open_sony_remote()
-  return false  
+val sony-remote-app = "/home/jrb/CrSDK_v1.05.00_20211207a_Linux64PC/SimpleRemoteCli"
+var sony-remote-process:Process
 
-public lostanza defn snap-sony-remote () -> ref<False> :
-  call-c snap_sony_remote()
-  return false  
+public defn open-sony-remote () :
+  sony-remote-process = Process(sony-remote-app, [ sony-remote-app ], PROCESS-IN, STANDARD-OUT, STANDARD-ERR)
+  for i in 0 to 5 do:
+    for j in 0 to 2 do : sleep-us(500000L)
+  println("DONE WAITING")
 
-public lostanza defn close-sony-remote () -> ref<False> :
-  call-c close_sony_remote()
-  return false  
+public defn snap-sony-remote () :
+  print(input-stream(sony-remote-process), "s")
+  flush(input-stream(sony-remote-process))
+
+public defn close-sony-remote () :
+  print(input-stream(sony-remote-process), "x")
+  flush(input-stream(sony-remote-process))
+  wait(sony-remote-process)
 
 ; defn main () :
 ;   println("HELLO")
