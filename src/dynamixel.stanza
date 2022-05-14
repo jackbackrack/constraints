@@ -158,7 +158,8 @@ val LEN-PRO-PRESENT-POSITION    =   4
 val LO-ID                       =   11                   ; Dynamixel#1 ID: 1
 val HI-ID                       =   12                   ; Dynamixel#2 ID: 2
 val BAUDRATE                    =   57600
-val DEVICENAME                  =   "/dev/tty.usbserial-FT6RW6SF"
+val DEVICENAME                  =   "/dev/ttyUSB0"
+; val DEVICENAME                  =   "/dev/tty.usbserial-FT6RW6SF"
                                                             ; ex) Windows: "COM1"   Linux: "/dev/ttyUSB0" Mac: "/dev/tty.usbserial-*"
 
 val TORQUE-ENABLE               =   1                   ; Value for enabling the torque
@@ -171,7 +172,7 @@ val DXL-MOVING-STATUS-THRESHOLD =   20                  ;  Dynamixel moving stat
 public defstruct DynamixelError <: Exception :
   message: String|Printable
 defmethod print (o:OutputStream, e:DynamixelError) :
-  print(o, "DynamixelError: %_" % [message])
+  print(o, "DynamixelError: %_" % [message(e)])
 
 defn enable-torques (port-num:Int, ids:Tuple<Int>) :
   for id in ids do :

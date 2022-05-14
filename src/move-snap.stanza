@@ -14,7 +14,8 @@ public defn playback (ids:Tuple<Int>, positionz:Seqable<Tuple<Int>>) :
   for positions in positionz do :
     servo-goal-positions(d, positions)
     snap-sony-remote()
-    sleep-us(1000000L)
+    for i in 0 to 2 do :
+      sleep-us(500000L)
     
   close-sony-remote()
   shutdown(d)
@@ -24,6 +25,7 @@ defn main () :
   val hi = 4095
   defn angle-to-value (x:Float) -> Int :
     min(hi, max(lo, to-int(round((to-float(hi) * (x + 180.0f) / 360.0f) + to-float(lo)))))
-  playback([13], seq({ [ angle-to-value(_) ] }, [-45.0f, 0.0f, 45.0f, 0.0f, -45.0f, -30.0f, -15.0f, 0.0f]))
+  val values = cat-all $ [for i in 0 to 45 by 5 seq : to-float(i), for i in 45 through 0 by -5 seq : to-float(i) ]
+  playback([13], seq({ [ angle-to-value(_) ] }, values))
 
 main()

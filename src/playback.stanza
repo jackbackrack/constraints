@@ -7,8 +7,8 @@ defpackage playback :
 defstruct Joint :
   id : Int
   name : Symbol
-  factor : Float
-  offset : Float
+  sign : Float
+  new-id : Int
 
 defn main () :
   val filename = "logs/abc.txt"
@@ -21,9 +21,9 @@ defn main () :
     val elts = to-tuple $ split(next(lines), " ")
     val id = to-int!(elts[0])
     val name = to-symbol(elts[1])
-    val factor = to-float!(elts[2])
-    val offset = to-float!(elts[3])
-    joints[id] = Joint(id, name, factor, offset)
+    val sign = to-float!(elts[2])
+    val new-id = to-int!(elts[3])
+    joints[id] = Joint(id, name, sign, new-id)
   println("--- FLOAT-ANGLES")
   val float-anglez = Vector<Array<Float>>()
   let loop () :
@@ -36,7 +36,7 @@ defn main () :
           val elts = to-tuple $ split(next(lines), " ")
           val [idx, angle] = [to-int!(elts[0]), to-float(elts[1]) as Float]
           val joint = joints[idx]
-          angles[idx] = factor(joint) * angle + offset(joint)
+          angles[new-id(joint)] = sign(joint) * angle
         println(angles)
         add(float-anglez, angles)
         loop()
